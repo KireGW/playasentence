@@ -1,0 +1,47 @@
+:root {
+  font-family: 'Trebuchet MS', 'Gill Sans', 'Avenir Next', sans-serif;
+  line-height: 1.5;
+  font-weight: 400;
+  color: #18313c;
+  background:
+    radial-gradient(circle at top left, rgba(247, 203, 117, 0.3), transparent 30%),
+    linear-gradient(180deg, #f1d8a3 0%, #d7e6ef 45%, #87afc1 100%);
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+
+  --page-text: #18313c;
+  --ink: #18313c;
+  --ink-soft: rgba(24, 49, 60, 0.8);
+  --panel-text: #f7f1e4;
+  --line: rgba(24, 49, 60, 0.12);
+  --accent-strong: #f3a142;
+  --accent-soft: #ffd39a;
+  --shadow: 0 22px 50px rgba(53, 39, 15, 0.12);
+  --heading: Georgia, 'Times New Roman', serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100svh;
+  color: var(--page-text);
+}
+
+button {
+  border: 0;
+  cursor: pointer;
+}
+
+p {
+  margin: 0;
+}
+
+#root {
+  min-height: 100svh;
+}
