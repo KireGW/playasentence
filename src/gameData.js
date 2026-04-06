@@ -1057,15 +1057,17 @@ const UI_STRINGS = {
     on: 'On',
     off: 'Off',
     instruction:
-      'Listen to each button and tap them in the correct sentence order.',
+      'Listen to each piece and place it on the line in the correct sentence order.',
     newPuzzleLoaded: 'New puzzle loaded',
     speechUnavailable: 'Speech synthesis is not available in this browser.',
     voiceUnavailable: 'No voice is available for this language on this device.',
     shuffledButtons: 'Shuffled audio buttons',
     playSegment: 'Play segment',
     playFullSentence: 'Play full sentence',
+    restart: 'Start over',
     newPuzzle: 'New puzzle',
     solved: 'Solved',
+    tryAgain: 'Try again',
   },
   spanish: {
     eyebrow: 'Rompecabezas Auditivo',
@@ -1085,15 +1087,17 @@ const UI_STRINGS = {
     on: 'Activado',
     off: 'Desactivado',
     instruction:
-      'Escucha cada botón y púlsalos en el orden correcto de la frase.',
+      'Escucha cada pieza y colócala en la línea en el orden correcto de la frase.',
     newPuzzleLoaded: 'Nuevo ejercicio cargado',
     speechUnavailable: 'La síntesis de voz no está disponible en este navegador.',
     voiceUnavailable: 'No hay ninguna voz disponible para este idioma en este dispositivo.',
     shuffledButtons: 'Botones de audio mezclados',
     playSegment: 'Reproducir segmento',
     playFullSentence: 'Reproducir frase completa',
+    restart: 'Empezar de nuevo',
     newPuzzle: 'Nueva frase',
     solved: 'Resuelto',
+    tryAgain: 'Inténtalo de nuevo',
   },
   french: {
     eyebrow: "Puzzle D'Ecoute",
@@ -1113,7 +1117,7 @@ const UI_STRINGS = {
     on: 'Activé',
     off: 'Désactivé',
     instruction:
-      'Écoute chaque bouton et appuie dessus dans le bon ordre de la phrase.',
+      'Écoute chaque pièce et place-la sur la ligne dans le bon ordre de la phrase.',
     newPuzzleLoaded: 'Nouvelle phrase chargée',
     speechUnavailable:
       "La synthèse vocale n'est pas disponible dans ce navigateur.",
@@ -1121,8 +1125,10 @@ const UI_STRINGS = {
     shuffledButtons: 'Boutons audio mélangés',
     playSegment: 'Jouer le segment',
     playFullSentence: 'Écouter la phrase entière',
+    restart: 'Recommencer',
     newPuzzle: 'Nouvelle phrase',
     solved: 'Réussi',
+    tryAgain: 'Essaie encore',
   },
   italian: {
     eyebrow: 'Puzzle di Ascolto',
@@ -1142,7 +1148,7 @@ const UI_STRINGS = {
     on: 'Attivo',
     off: 'Disattivo',
     instruction:
-      'Ascolta ogni pulsante e premili nell’ordine corretto della frase.',
+      'Ascolta ogni pezzo e posizionalo sulla riga nell’ordine corretto della frase.',
     newPuzzleLoaded: 'Nuovo esercizio caricato',
     speechUnavailable:
       'La sintesi vocale non è disponibile in questo browser.',
@@ -1150,8 +1156,10 @@ const UI_STRINGS = {
     shuffledButtons: 'Pulsanti audio mescolati',
     playSegment: 'Riproduci segmento',
     playFullSentence: 'Riproduci frase completa',
+    restart: 'Ricomincia',
     newPuzzle: 'Nuova frase',
     solved: 'Risolto',
+    tryAgain: 'Riprova',
   },
   german: {
     eyebrow: 'Hör-Puzzle',
@@ -1171,7 +1179,7 @@ const UI_STRINGS = {
     on: 'An',
     off: 'Aus',
     instruction:
-      'Höre jeden Button an und tippe sie in der richtigen Satzreihenfolge an.',
+      'Höre jedes Teil an und lege es in der richtigen Satzreihenfolge auf die Zeile.',
     newPuzzleLoaded: 'Neues Rätsel geladen',
     speechUnavailable:
       'Die Sprachsynthese ist in diesem Browser nicht verfügbar.',
@@ -1179,8 +1187,10 @@ const UI_STRINGS = {
     shuffledButtons: 'Gemischte Audiobuttons',
     playSegment: 'Segment abspielen',
     playFullSentence: 'Ganzen Satz abspielen',
+    restart: 'Neu beginnen',
     newPuzzle: 'Neues Rätsel',
     solved: 'Gelöst',
+    tryAgain: 'Versuch es noch einmal',
   },
   mandarin: {
     eyebrow: '听力拼句游戏',
@@ -1199,15 +1209,17 @@ const UI_STRINGS = {
     male: '男声',
     on: '开启',
     off: '关闭',
-    instruction: '听每个按钮，然后按句子的正确顺序点击它们。',
+    instruction: '听每个片段，然后把它按正确顺序放到句子线上。',
     newPuzzleLoaded: '已加载新题目',
     speechUnavailable: '当前浏览器不支持语音合成。',
     voiceUnavailable: '这台设备上没有可用于该语言的语音。',
     shuffledButtons: '打乱的语音按钮',
     playSegment: '播放片段',
     playFullSentence: '播放完整句子',
+    restart: '重新开始',
     newPuzzle: '新题目',
     solved: '完成',
+    tryAgain: '再试一次',
   },
   swedish: {
     eyebrow: 'Lyssningspussel',
@@ -1227,15 +1239,17 @@ const UI_STRINGS = {
     on: 'På',
     off: 'Av',
     instruction:
-      'Lyssna på varje knapp och tryck dem i meningens rätta ordning.',
+      'Lyssna på varje bit och lägg den på raden i meningens rätta ordning.',
     newPuzzleLoaded: 'Ny mening laddad',
     speechUnavailable: 'Talsyntes är inte tillgängligt i den här webbläsaren.',
     voiceUnavailable: 'Det finns ingen tillgänglig röst för det här språket på den här enheten.',
     shuffledButtons: 'Blandade ljudknappar',
     playSegment: 'Spela segment',
     playFullSentence: 'Spela hela meningen',
+    restart: 'Börja om',
     newPuzzle: 'Ny mening',
     solved: 'Klar',
+    tryAgain: 'Försök igen',
   },
 }
 

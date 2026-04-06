@@ -22,7 +22,6 @@ const REVEAL_MODES = [
 ]
 
 const STORAGE_KEY = 'playasentence-settings'
-const ATTEMPT_RESET_DELAY = 2400
 
 function loadSavedSettings() {
   if (typeof window === 'undefined') {
@@ -197,27 +196,81 @@ function getAvailableVoiceGenders(language) {
     : [VOICE_GENDERS[0].id]
 }
 
-function formatSolvedSentence(languageId, sentence) {
-  let formatted = sentence
-
-  if (languageId === 'english') {
-    formatted = formatted.replace(/\bi\b/g, 'I')
-  }
-
-  const trimmed = formatted.trim()
-  if (!trimmed) {
-    return trimmed
-  }
-
-  const capitalized = trimmed.charAt(0).toUpperCase() + trimmed.slice(1)
-  return /[.!?]$/.test(capitalized) ? capitalized : `${capitalized}.`
-}
-
 function getSpeechSettings() {
   return {
     rate: 0.67,
     pitch: 1,
   }
+}
+
+function formatSolvedDisplayTexts(languageId, segments) {
+  const nextTexts = segments.map((segment) => {
+    if (!segment) {
+      return ''
+    }
+
+    if (languageId === 'english' && segment.text === 'i') {
+      return 'I'
+    }
+
+    return segment.text
+  })
+
+  const firstIndex = nextTexts.findIndex(Boolean)
+  if (firstIndex >= 0) {
+    const firstText = nextTexts[firstIndex]
+    nextTexts[firstIndex] = firstText.charAt(0).toUpperCase() + firstText.slice(1)
+  }
+
+  for (let index = nextTexts.length - 1; index >= 0; index -= 1) {
+    if (!nextTexts[index]) {
+      continue
+    }
+
+    if (!/[.!?]$/.test(nextTexts[index])) {
+      nextTexts[index] = `${nextTexts[index]}.`
+    }
+    break
+  }
+
+  return nextTexts
+}
+
+function createEmptySlots(length) {
+  return Array.from({ length }, () => null)
+}
+
+function shuffleItems(items) {
+  const nextItems = [...items]
+
+  for (let index = nextItems.length - 1; index > 0; index -= 1) {
+    const swapIndex = Math.floor(Math.random() * (index + 1))
+    ;[nextItems[index], nextItems[swapIndex]] = [nextItems[swapIndex], nextItems[index]]
+  }
+
+  return nextItems
+}
+
+function createDragPreviewElement(rect) {
+  if (typeof window === 'undefined') {
+    return null
+  }
+
+  const preview = window.document.createElement('div')
+  preview.className = 'drag-native-preview'
+  if (rect) {
+    preview.style.width = `${rect.width}px`
+    preview.style.height = `${rect.height}px`
+    preview.style.borderRadius = `${Math.min(rect.width, rect.height) * 0.2}px`
+  }
+  preview.innerHTML = `
+    <span class="tile-face tile-front" aria-hidden="true">
+      <span class="tile-speaker">🔊</span>
+      <span class="tile-mark"> </span>
+    </span>
+  `
+  window.document.body.appendChild(preview)
+  return preview
 }
 
 function App() {
@@ -238,26 +291,59 @@ function App() {
   const [selectedVoiceGender, setSelectedVoiceGender] = useState(initialVoiceGender)
   const [revealWhilePlaying, setRevealWhilePlaying] = useState(initialRevealWhilePlaying)
   const [round, setRound] = useState(() => generateRound(initialLanguage, initialLevel))
+  const [placedSegments, setPlacedSegments] = useState(() =>
+    createEmptySlots(round.orderedSegments.length),
+  )
+  const [selectedSlotIndex, setSelectedSlotIndex] = useState(null)
+  const [hoveredSlotIndex, setHoveredSlotIndex] = useState(null)
+  const [bankHovered, setBankHovered] = useState(false)
+  const [pointerDragTile, setPointerDragTile] = useState(null)
+  const [draggingSlotIndex, setDraggingSlotIndex] = useState(null)
+  const [suppressPlacedText, setSuppressPlacedText] = useState(false)
   const [activeTileId, setActiveTileId] = useState(null)
   const [recentTileIds, setRecentTileIds] = useState([])
   const [showRoundChange, setShowRoundChange] = useState(false)
   const [solvedSentence, setSolvedSentence] = useState('')
   const roundChangeTimeoutRef = useRef(null)
   const activeTileTimeoutRef = useRef(null)
+  const suppressPlacedTextTimeoutRef = useRef(null)
+  const solveFrameRef = useRef(null)
   const recentTileTimeoutsRef = useRef({})
-  const attemptResetTimeoutRef = useRef(null)
   const [voiceInventoryReady, setVoiceInventoryReady] = useState(false)
-  const pickedIdsRef = useRef([])
   const solvedSentenceRef = useRef('')
+  const dragPayloadRef = useRef(null)
+  const dragPreviewRef = useRef(null)
+  const pointerDragIndexRef = useRef(null)
+  const pointerDragOffsetRef = useRef({ x: 0, y: 0 })
+  const pendingPointerDragRef = useRef(null)
+  const suppressSlotClickRef = useRef(false)
+  const suppressTileClickRef = useRef(false)
 
   const currentLanguage = getLanguageConfig(selectedLanguage)
   const ui = currentLanguage.ui
   const isComplete = solvedSentence.length > 0
-  const tileColumns = Math.ceil(round.shuffledSegments.length / 2)
+  const isBuilderFilled = placedSegments.every(Boolean)
+  const builderStatus = isComplete
+    ? 'solved'
+    : isBuilderFilled
+      ? 'incorrect'
+      : 'building'
   const [availableVoiceGenders, setAvailableVoiceGenders] = useState(() =>
     VOICE_GENDERS.map((voiceGender) => voiceGender.id),
   )
   const hasLanguageVoice = availableVoiceGenders.length > 0
+  const placedIds = placedSegments
+    .filter(Boolean)
+    .map((segment) => segment.id)
+  const segmentById = Object.fromEntries(
+    round.orderedSegments.map((segment) => [segment.id, segment]),
+  )
+  const bankSegments = round.shuffledSegments.map((segment) =>
+    placedIds.includes(segment.id) ? null : segment,
+  )
+  const solvedDisplayTexts = isComplete
+    ? formatSolvedDisplayTexts(selectedLanguage, placedSegments)
+    : []
 
   useEffect(() => {
     if (!speechSupported) {
@@ -280,12 +366,13 @@ function App() {
     updateVoice()
     window.speechSynthesis.onvoiceschanged = updateVoice
 
-    return () => {
+      return () => {
       window.speechSynthesis?.cancel()
       window.speechSynthesis.onvoiceschanged = null
       window.clearTimeout(roundChangeTimeoutRef.current)
       window.clearTimeout(activeTileTimeoutRef.current)
-      window.clearTimeout(attemptResetTimeoutRef.current)
+      window.clearTimeout(suppressPlacedTextTimeoutRef.current)
+      window.cancelAnimationFrame(solveFrameRef.current)
       Object.values(recentTileTimeoutsRef.current).forEach((timeoutId) => {
         window.clearTimeout(timeoutId)
       })
@@ -316,6 +403,83 @@ function App() {
   useEffect(() => {
     solvedSentenceRef.current = solvedSentence
   }, [solvedSentence])
+
+  useEffect(() => {
+    function updatePointerDragPosition(event) {
+      if (
+        pointerDragIndexRef.current === null &&
+        pendingPointerDragRef.current
+      ) {
+        const pendingDrag = pendingPointerDragRef.current
+        const movedX = event.clientX - pendingDrag.startX
+        const movedY = event.clientY - pendingDrag.startY
+        const distance = Math.hypot(movedX, movedY)
+
+        if (distance >= 6) {
+          pointerDragIndexRef.current = pendingDrag.index
+          pointerDragOffsetRef.current = {
+            x: Math.min(
+              Math.max(event.clientX - pendingDrag.tileRect.left, 0),
+              pendingDrag.tileRect.width,
+            ),
+            y: Math.min(
+              Math.max(event.clientY - pendingDrag.tileRect.top, 0),
+              pendingDrag.tileRect.height,
+            ),
+          }
+          setHoveredSlotIndex(pendingDrag.index)
+          setDraggingSlotIndex(pendingDrag.index)
+          setSuppressPlacedText(true)
+          setPointerDragTile({
+            text: pendingDrag.segment.text,
+            id: pendingDrag.segment.id,
+            x: pendingDrag.tileRect.left,
+            y: pendingDrag.tileRect.top,
+            width: pendingDrag.tileRect.width,
+            height: pendingDrag.tileRect.height,
+          })
+          pendingPointerDragRef.current = null
+        }
+      }
+
+      if (pointerDragIndexRef.current === null) {
+        return
+      }
+
+      setPointerDragTile((currentTile) =>
+        currentTile
+          ? {
+              ...currentTile,
+              x: event.clientX - pointerDragOffsetRef.current.x,
+              y: event.clientY - pointerDragOffsetRef.current.y,
+            }
+          : currentTile,
+      )
+    }
+
+    function clearPointerDrag() {
+      pendingPointerDragRef.current = null
+      pointerDragIndexRef.current = null
+      setHoveredSlotIndex(null)
+      setBankHovered(false)
+      setPointerDragTile(null)
+      setDraggingSlotIndex(null)
+      window.setTimeout(() => {
+        suppressSlotClickRef.current = false
+        suppressTileClickRef.current = false
+      }, 0)
+    }
+
+    window.addEventListener('pointermove', updatePointerDragPosition)
+    window.addEventListener('pointerup', clearPointerDrag)
+    window.addEventListener('pointercancel', clearPointerDrag)
+
+    return () => {
+      window.removeEventListener('pointermove', updatePointerDragPosition)
+      window.removeEventListener('pointerup', clearPointerDrag)
+      window.removeEventListener('pointercancel', clearPointerDrag)
+    }
+  }, [])
 
   function speakText(text, tileId = null) {
     if (!speechSupported || (voiceInventoryReady && !hasLanguageVoice)) {
@@ -358,30 +522,89 @@ function App() {
     window.speechSynthesis.speak(utterance)
   }
 
-  function clearAttemptProgress() {
-    pickedIdsRef.current = []
-    window.clearTimeout(attemptResetTimeoutRef.current)
+  function getSolvedSentenceFromIds(segmentIds) {
+    return segmentIds
+      .map((segmentId) =>
+        round.orderedSegments.find((roundSegment) => roundSegment.id === segmentId)?.text,
+      )
+      .filter(Boolean)
+      .join(round.language.joiner)
   }
 
-  function scheduleAttemptReset() {
-    window.clearTimeout(attemptResetTimeoutRef.current)
-    attemptResetTimeoutRef.current = window.setTimeout(() => {
-      pickedIdsRef.current = []
-    }, ATTEMPT_RESET_DELAY)
+  function getCurrentLineSpeechText() {
+    const lineSegments = placedSegments
+      .filter(Boolean)
+      .map((segment) => segmentById[segment.id] ?? segment)
+
+    if (lineSegments.length === 0) {
+      return round.fullSentence
+    }
+
+    return lineSegments
+      .map((segment) => segment.speechText ?? segment.text)
+      .join(round.language.joiner)
+  }
+
+  function updateSolvedState(nextPlacedSegments) {
+    window.cancelAnimationFrame(solveFrameRef.current)
+    const nextPlacedIds = nextPlacedSegments
+      .filter(Boolean)
+      .map((segment) => segment.id)
+
+    if (nextPlacedIds.length !== round.orderedSegments.length) {
+      if (solvedSentenceRef.current.length > 0) {
+        solvedSentenceRef.current = ''
+        setSolvedSentence('')
+      }
+      return
+    }
+
+    const solvedOrder = round.acceptedOrders.find((acceptedOrder) =>
+      acceptedOrder.every((segmentId, index) => nextPlacedIds[index] === segmentId),
+    )
+
+    if (!solvedOrder) {
+      if (solvedSentenceRef.current.length > 0) {
+        solvedSentenceRef.current = ''
+        setSolvedSentence('')
+      }
+      return
+    }
+
+    const nextSolvedSentence = getSolvedSentenceFromIds(solvedOrder)
+    solveFrameRef.current = window.requestAnimationFrame(() => {
+      solvedSentenceRef.current = nextSolvedSentence
+      setSolvedSentence(nextSolvedSentence)
+      speakText(nextSolvedSentence)
+    })
+  }
+
+  function setPlacedSegmentsWithSolve(nextPlacedSegments) {
+    setPlacedSegments(nextPlacedSegments)
+    updateSolvedState(nextPlacedSegments)
   }
 
   function startNewRound(languageId, level) {
     const nextRound = generateRound(languageId, level)
     setRound(nextRound)
-    clearAttemptProgress()
+    setPlacedSegments(createEmptySlots(nextRound.orderedSegments.length))
     setRecentTileIds([])
     setSolvedSentence('')
     solvedSentenceRef.current = ''
+    setSelectedSlotIndex(null)
+    setHoveredSlotIndex(null)
+    setBankHovered(false)
+    setPointerDragTile(null)
+    setDraggingSlotIndex(null)
+    setSuppressPlacedText(false)
     setActiveTileId(null)
+    dragPayloadRef.current = null
+    pendingPointerDragRef.current = null
     setShowRoundChange(true)
     window.clearTimeout(roundChangeTimeoutRef.current)
     window.clearTimeout(activeTileTimeoutRef.current)
-    window.clearTimeout(attemptResetTimeoutRef.current)
+    window.clearTimeout(suppressPlacedTextTimeoutRef.current)
+    window.cancelAnimationFrame(solveFrameRef.current)
     Object.values(recentTileTimeoutsRef.current).forEach((timeoutId) => {
       window.clearTimeout(timeoutId)
     })
@@ -389,6 +612,35 @@ function App() {
     roundChangeTimeoutRef.current = window.setTimeout(() => {
       setShowRoundChange(false)
     }, 1400)
+    window.speechSynthesis?.cancel()
+  }
+
+  function restartCurrentRound() {
+    setRound((currentRound) => ({
+      ...currentRound,
+      shuffledSegments: shuffleItems(currentRound.orderedSegments),
+    }))
+    setPlacedSegments(createEmptySlots(round.orderedSegments.length))
+    setRecentTileIds([])
+    setSolvedSentence('')
+    solvedSentenceRef.current = ''
+    setSelectedSlotIndex(null)
+    setHoveredSlotIndex(null)
+    setBankHovered(false)
+    setPointerDragTile(null)
+    setDraggingSlotIndex(null)
+    setActiveTileId(null)
+    dragPayloadRef.current = null
+    pendingPointerDragRef.current = null
+    pointerDragIndexRef.current = null
+    suppressSlotClickRef.current = false
+    suppressTileClickRef.current = false
+    window.clearTimeout(activeTileTimeoutRef.current)
+    window.cancelAnimationFrame(solveFrameRef.current)
+    Object.values(recentTileTimeoutsRef.current).forEach((timeoutId) => {
+      window.clearTimeout(timeoutId)
+    })
+    recentTileTimeoutsRef.current = {}
     window.speechSynthesis?.cancel()
   }
 
@@ -431,42 +683,266 @@ function App() {
     }, 1800)
 
     speakText(segment.speechText ?? segment.text, segment.id)
+  }
 
-    if (solvedSentenceRef.current.length > 0) {
+  function handleTileKeyDown(event, segment) {
+    if (event.key !== 'Enter' && event.key !== ' ') {
       return
     }
 
-    const nextPickedIds = [...pickedIdsRef.current, segment.id]
-    const matchingOrders = round.acceptedOrders.filter((acceptedOrder) =>
-      nextPickedIds.every((pickedId, index) => acceptedOrder[index] === pickedId),
+    event.preventDefault()
+    handleTileClick(segment)
+  }
+
+  function handlePlacedSlotKeyDown(event, segment, index) {
+    const currentSegment = getPlacedSegmentAtIndex(index) ?? segment
+
+    if (event.key === 'Backspace' || event.key === 'Delete') {
+      event.preventDefault()
+      handleSlotClear(index)
+      return
+    }
+
+    handleTileKeyDown(event, currentSegment)
+  }
+
+  function getPlacedSegmentAtIndex(index) {
+    const placedSegment = placedSegments[index]
+    if (!placedSegment) {
+      return null
+    }
+
+    return segmentById[placedSegment.id] ?? placedSegment
+  }
+
+  function handleDragStart(event, segment, origin) {
+    dragPayloadRef.current = {
+      origin,
+      segment,
+    }
+    suppressTileClickRef.current = true
+    setHoveredSlotIndex(origin.type === 'slot' ? origin.index : null)
+    if (origin.type === 'slot') {
+      setDraggingSlotIndex(origin.index)
+      setSuppressPlacedText(true)
+    }
+    event.dataTransfer.effectAllowed = 'move'
+    event.dataTransfer.setData('text/plain', segment.id)
+    const sourceRect = event.currentTarget.getBoundingClientRect()
+    const preview = createDragPreviewElement(sourceRect)
+    if (preview) {
+      dragPreviewRef.current = preview
+      event.dataTransfer.setDragImage(preview, preview.offsetWidth / 2, preview.offsetHeight / 2)
+    }
+  }
+
+  function handleDragEnd() {
+    dragPayloadRef.current = null
+    setHoveredSlotIndex(null)
+    dragPreviewRef.current?.remove()
+    dragPreviewRef.current = null
+    setDraggingSlotIndex(null)
+    window.clearTimeout(suppressPlacedTextTimeoutRef.current)
+    suppressPlacedTextTimeoutRef.current = window.setTimeout(() => {
+      setSuppressPlacedText(false)
+    }, 120)
+    window.setTimeout(() => {
+      suppressTileClickRef.current = false
+    }, 0)
+  }
+
+  function allowDrop(event) {
+    event.preventDefault()
+    event.dataTransfer.dropEffect = 'move'
+  }
+
+  function handleSlotDrop(slotIndex) {
+    const dragPayload = dragPayloadRef.current
+    if (!dragPayload) {
+      return
+    }
+
+    const { origin, segment } = dragPayload
+    const nextPlacedSegments = [...placedSegments]
+
+    if (origin.type === 'slot') {
+      const fromIndex = origin.index
+      const existingAtTarget = nextPlacedSegments[slotIndex]
+      nextPlacedSegments[fromIndex] = existingAtTarget ?? null
+      nextPlacedSegments[slotIndex] = segment
+      setHoveredSlotIndex(null)
+      setPlacedSegmentsWithSolve(nextPlacedSegments)
+      return
+    }
+
+    const existingIndex = nextPlacedSegments.findIndex(
+      (placedSegment) => placedSegment?.id === segment.id,
     )
 
-    if (matchingOrders.length === 0) {
-      clearAttemptProgress()
+    if (existingIndex >= 0) {
+      nextPlacedSegments[existingIndex] = null
+    }
+
+    nextPlacedSegments[slotIndex] = segment
+    setHoveredSlotIndex(null)
+    setPlacedSegmentsWithSolve(nextPlacedSegments)
+  }
+
+  function handleLineDrop() {
+    const dragPayload = dragPayloadRef.current
+    if (!dragPayload || dragPayload.origin.type !== 'slot') {
       return
     }
 
-    pickedIdsRef.current = nextPickedIds
-    scheduleAttemptReset()
+    const nextPlacedSegments = [...placedSegments]
+    nextPlacedSegments[dragPayload.origin.index] = null
+    setHoveredSlotIndex(null)
+    setPlacedSegmentsWithSolve(nextPlacedSegments)
+  }
 
-    const solvedOrder = matchingOrders.find(
-      (acceptedOrder) => acceptedOrder.length === nextPickedIds.length,
-    )
-
-    if (!solvedOrder) {
+  function handleSlotClear(slotIndex) {
+    if (!placedSegments[slotIndex]) {
       return
     }
 
-    const nextSolvedSentence = solvedOrder
-      .map((segmentId) =>
-        round.orderedSegments.find((roundSegment) => roundSegment.id === segmentId)?.text,
-      )
-      .filter(Boolean)
-      .join(round.language.joiner)
+    const nextPlacedSegments = [...placedSegments]
+    nextPlacedSegments[slotIndex] = null
+    if (selectedSlotIndex === slotIndex) {
+      setSelectedSlotIndex(null)
+    }
+    setPlacedSegmentsWithSolve(nextPlacedSegments)
+  }
 
-    window.clearTimeout(attemptResetTimeoutRef.current)
-    solvedSentenceRef.current = nextSolvedSentence
-    setSolvedSentence(nextSolvedSentence)
+  function movePlacedSegmentByPointer(fromIndex, toIndex) {
+    if (fromIndex === toIndex) {
+      return
+    }
+
+    const nextPlacedSegments = [...placedSegments]
+    const movingSegment = nextPlacedSegments[fromIndex]
+    const targetSegment = nextPlacedSegments[toIndex]
+    nextPlacedSegments[toIndex] = movingSegment
+    nextPlacedSegments[fromIndex] = targetSegment ?? null
+    setSelectedSlotIndex(null)
+    setPlacedSegmentsWithSolve(nextPlacedSegments)
+  }
+
+  function handleSlotClick(index) {
+    const currentSegment = getPlacedSegmentAtIndex(index)
+    if (!currentSegment) {
+      return
+    }
+    handleTileClick(currentSegment)
+  }
+
+  function handleEmptySlotClick() {}
+
+  function handleSlotPointerDown(event, index, segment) {
+    if (!segment || (voiceInventoryReady && !hasLanguageVoice)) {
+      return
+    }
+
+    const placedCard = event.currentTarget.querySelector('.placed-card')
+    const tileRect = placedCard?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect()
+    pendingPointerDragRef.current = {
+      index,
+      segment,
+      tileRect,
+      startX: event.clientX,
+      startY: event.clientY,
+    }
+    suppressSlotClickRef.current = false
+  }
+
+  function handleSlotPointerEnter(index) {
+    const fromIndex = pointerDragIndexRef.current
+    if (fromIndex === null) {
+      return
+    }
+
+    setHoveredSlotIndex(index)
+  }
+
+  function handleSlotPointerUp(index) {
+    const fromIndex = pointerDragIndexRef.current
+    if (fromIndex === null) {
+      return
+    }
+
+    if (fromIndex !== index) {
+      suppressSlotClickRef.current = true
+      movePlacedSegmentByPointer(fromIndex, index)
+    }
+
+    pointerDragIndexRef.current = null
+    setHoveredSlotIndex(null)
+    window.clearTimeout(suppressPlacedTextTimeoutRef.current)
+    suppressPlacedTextTimeoutRef.current = window.setTimeout(() => {
+      setSuppressPlacedText(false)
+    }, 120)
+  }
+
+  function handleSlotDragEnter(index) {
+    if (!dragPayloadRef.current || dragPayloadRef.current.origin.type !== 'bank') {
+      return
+    }
+
+    setBankHovered(false)
+    suppressSlotClickRef.current = true
+    setHoveredSlotIndex(index)
+  }
+
+  function handleBankPointerEnter() {
+    if (pointerDragIndexRef.current === null) {
+      return
+    }
+
+    setHoveredSlotIndex(null)
+    setBankHovered(true)
+  }
+
+  function handleBankPointerLeave() {
+    if (pointerDragIndexRef.current === null) {
+      return
+    }
+
+    setBankHovered(false)
+  }
+
+  function handleBankPointerUp() {
+    const fromIndex = pointerDragIndexRef.current
+    if (fromIndex === null) {
+      return
+    }
+
+    suppressSlotClickRef.current = true
+    pointerDragIndexRef.current = null
+    setHoveredSlotIndex(null)
+    setBankHovered(false)
+    setPointerDragTile(null)
+    setDraggingSlotIndex(null)
+    handleSlotClear(fromIndex)
+  }
+
+  function handleBankDragEnter() {
+    if (!dragPayloadRef.current || dragPayloadRef.current.origin.type !== 'slot') {
+      return
+    }
+
+    setHoveredSlotIndex(null)
+    setBankHovered(true)
+  }
+
+  function handleBankDrop(event) {
+    event.preventDefault()
+
+    const dragPayload = dragPayloadRef.current
+    if (!dragPayload || dragPayload.origin.type !== 'slot') {
+      return
+    }
+
+    setBankHovered(false)
+    handleSlotClear(dragPayload.origin.index)
   }
 
   return (
@@ -589,37 +1065,185 @@ function App() {
         ) : null}
 
         <section
-          className="tile-grid"
+          className={`builder-line ${builderStatus} ${
+            pointerDragTile || suppressPlacedText ? 'pointer-dragging' : ''
+          }`}
+          aria-label={ui.solved}
+          style={{
+            gridTemplateColumns: `repeat(${round.orderedSegments.length}, minmax(110px, 1fr))`,
+          }}
+          onDragOver={allowDrop}
+          onDrop={handleLineDrop}
+        >
+          {placedSegments.map((segment, index) => (
+            (() => {
+              const isDraggingOrigin = draggingSlotIndex === index && pointerDragTile
+              const visibleSegment = isDraggingOrigin ? null : segment
+
+              return (
+            <div
+              key={`slot-${index}`}
+              role={visibleSegment ? 'button' : undefined}
+              tabIndex={!(voiceInventoryReady && !hasLanguageVoice) ? 0 : undefined}
+              draggable={false}
+              aria-disabled={visibleSegment && voiceInventoryReady && !hasLanguageVoice}
+              aria-label={visibleSegment ? `${ui.playSegment} ${index + 1}` : undefined}
+              className={`drop-slot ${visibleSegment ? 'filled' : 'empty'} ${
+                visibleSegment && activeTileId === visibleSegment.id ? 'playing' : ''
+              } ${
+                visibleSegment &&
+                revealWhilePlaying &&
+                activeTileId === visibleSegment.id
+                  ? 'revealed'
+                  : ''
+              } ${
+                visibleSegment && recentTileIds.includes(visibleSegment.id) ? 'recent' : ''
+              } ${selectedSlotIndex === index ? 'selected' : ''} ${
+                hoveredSlotIndex === index ? 'hovered' : ''
+              }`}
+              onClick={
+                visibleSegment
+                  ? () => {
+                      if (suppressSlotClickRef.current || suppressTileClickRef.current) {
+                        return
+                      }
+                      handleSlotClick(index)
+                    }
+                  : () => handleEmptySlotClick(index)
+              }
+              onDoubleClick={visibleSegment ? () => handleSlotClear(index) : undefined}
+              onPointerDown={
+                visibleSegment
+                  ? (event) => handleSlotPointerDown(event, index, visibleSegment)
+                  : undefined
+              }
+              onPointerEnter={() => handleSlotPointerEnter(index)}
+              onPointerUp={() => handleSlotPointerUp(index)}
+              onKeyDown={
+                visibleSegment
+                  ? (event) => handlePlacedSlotKeyDown(event, visibleSegment, index)
+                  : undefined
+              }
+              onDragOver={allowDrop}
+              onDragEnter={() => handleSlotDragEnter(index)}
+              onDrop={(event) => {
+                event.preventDefault()
+                handleSlotDrop(index)
+              }}
+            >
+              {visibleSegment ? (
+                <div
+                  className={`placed-card sound-tile ${
+                    activeTileId === visibleSegment.id ? 'playing' : ''
+                  } ${
+                    !isComplete &&
+                    revealWhilePlaying &&
+                    activeTileId === visibleSegment.id
+                      ? 'revealed'
+                      : ''
+                  } ${recentTileIds.includes(visibleSegment.id) ? 'recent' : ''} ${
+                    isComplete ? 'solved-revealed' : ''
+                  }`}
+                  aria-hidden="true"
+                >
+                  <span className="tile-face tile-front" aria-hidden="true">
+                    <span className="tile-speaker">🔊</span>
+                    <span className="tile-mark">
+                      {activeTileId === visibleSegment.id ? '...' : ' '}
+                    </span>
+                  </span>
+                  <span className="tile-face tile-back">
+                    {isComplete ? solvedDisplayTexts[index] : visibleSegment.text}
+                  </span>
+                </div>
+              ) : (
+                <div className="drop-slot-placeholder" aria-hidden="true">
+                  <span className="drop-slot-index">{index + 1}</span>
+                  <span className="drop-slot-dots" />
+                </div>
+              )}
+            </div>
+              )
+            })()
+          ))}
+        </section>
+
+        {isComplete ? (
+          <div className="solved-banner" aria-live="polite">
+            <span>{`${ui.solved}!`}</span>
+          </div>
+        ) : null}
+
+        {builderStatus === 'incorrect' ? (
+          <div className="retry-banner" aria-live="polite">
+            <span>{ui.tryAgain}</span>
+          </div>
+        ) : null}
+
+        <section
+          className={`tile-grid tile-bank ${bankHovered ? 'hovered' : ''}`}
           aria-label={ui.shuffledButtons}
           style={{
-            gridTemplateColumns: `repeat(${tileColumns}, minmax(110px, 1fr))`,
+            gridTemplateColumns: `repeat(${round.orderedSegments.length}, minmax(110px, 1fr))`,
           }}
+          onPointerEnter={handleBankPointerEnter}
+          onPointerLeave={handleBankPointerLeave}
+          onPointerUp={handleBankPointerUp}
+          onDragOver={allowDrop}
+          onDragEnter={handleBankDragEnter}
+          onDrop={handleBankDrop}
         >
-          {round.shuffledSegments.map((segment) => (
-            <button
-              key={segment.id}
-              type="button"
-              disabled={voiceInventoryReady && !hasLanguageVoice}
-              className={`sound-tile ${activeTileId === segment.id ? 'playing' : ''} ${
-                revealWhilePlaying && activeTileId === segment.id ? 'revealed' : ''
-              } ${recentTileIds.includes(segment.id) ? 'recent' : ''}`}
-              onClick={() => handleTileClick(segment)}
-              aria-label={`${ui.playSegment} ${segment.position + 1}`}
-            >
-              <span className="tile-face tile-front" aria-hidden="true">
-                <span className="tile-mark">{activeTileId === segment.id ? '...' : ' '}</span>
-              </span>
-              <span className="tile-face tile-back">{segment.text}</span>
-            </button>
-          ))}
+          {bankSegments.map((segment, index) =>
+            segment ? (
+              <div
+                key={segment.id}
+                role="button"
+                tabIndex={voiceInventoryReady && !hasLanguageVoice ? -1 : 0}
+                draggable
+                aria-disabled={voiceInventoryReady && !hasLanguageVoice}
+                className={`sound-tile ${activeTileId === segment.id ? 'playing' : ''} ${
+                  revealWhilePlaying && activeTileId === segment.id ? 'revealed' : ''
+                } ${recentTileIds.includes(segment.id) ? 'recent' : ''}`}
+                onClick={() => {
+                  if (suppressTileClickRef.current) {
+                    return
+                  }
+                  handleTileClick(segment)
+                }}
+                onKeyDown={(event) => handleTileKeyDown(event, segment)}
+                onDragStart={(event) => handleDragStart(event, segment, { type: 'bank' })}
+                onDragEnd={handleDragEnd}
+                aria-label={`${ui.playSegment} ${segment.position + 1}`}
+              >
+                <span className="tile-face tile-front" aria-hidden="true">
+                  <span className="tile-speaker">🔊</span>
+                  <span className="tile-mark">{activeTileId === segment.id ? '...' : ' '}</span>
+                </span>
+                <span className="tile-face tile-back">{segment.text}</span>
+              </div>
+            ) : (
+              <div
+                key={`bank-placeholder-${index}`}
+                className="bank-placeholder"
+                aria-hidden="true"
+              />
+            ),
+          )}
         </section>
 
         <div className="toolbar">
           <button
             type="button"
             className="ghost-button"
+            onClick={restartCurrentRound}
+          >
+            {ui.restart}
+          </button>
+          <button
+            type="button"
+            className="ghost-button"
             disabled={voiceInventoryReady && !hasLanguageVoice}
-            onClick={() => speakText(round.fullSentence)}
+            onClick={() => speakText(getCurrentLineSpeechText())}
           >
             {ui.playFullSentence}
           </button>
@@ -632,11 +1256,22 @@ function App() {
           </button>
         </div>
 
-        {isComplete ? (
-          <section className="answer-panel">
-            <p className="eyebrow">{ui.solved}</p>
-            <p>{formatSolvedSentence(selectedLanguage, solvedSentence)}</p>
-          </section>
+        {pointerDragTile ? (
+          <div
+            className="drag-ghost"
+            aria-hidden="true"
+            style={{
+              left: `${pointerDragTile.x}px`,
+              top: `${pointerDragTile.y}px`,
+              width: `${pointerDragTile.width}px`,
+              height: `${pointerDragTile.height}px`,
+            }}
+          >
+            <span className="tile-face tile-front" aria-hidden="true">
+              <span className="tile-speaker">🔊</span>
+              <span className="tile-mark"> </span>
+            </span>
+          </div>
         ) : null}
       </section>
     </main>
