@@ -22,6 +22,11 @@
   --heading: Georgia, 'Times New Roman', serif;
 }
 
+html {
+  min-height: 100%;
+  overscroll-behavior: none;
+}
+
 * {
   box-sizing: border-box;
 }
@@ -31,6 +36,7 @@ body {
   min-width: 320px;
   min-height: 100svh;
   color: var(--page-text);
+  overscroll-behavior: none;
 }
 
 button {
@@ -44,4 +50,5 @@ p {
 
 #root {
   min-height: 100svh;
+  overflow: hidden;
 }

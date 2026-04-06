@@ -8,6 +8,8 @@ import {
   getLanguageConfig,
 } from './gameData.js'
 
+const TOUCH_DRAG_HOLD_MS = 500
+
 const speechSupported =
   typeof window !== 'undefined' && 'speechSynthesis' in window
 
@@ -251,28 +253,6 @@ function shuffleItems(items) {
   return nextItems
 }
 
-function createDragPreviewElement(rect) {
-  if (typeof window === 'undefined') {
-    return null
-  }
-
-  const preview = window.document.createElement('div')
-  preview.className = 'drag-native-preview'
-  if (rect) {
-    preview.style.width = `${rect.width}px`
-    preview.style.height = `${rect.height}px`
-    preview.style.borderRadius = `${Math.min(rect.width, rect.height) * 0.2}px`
-  }
-  preview.innerHTML = `
-    <span class="tile-face tile-front" aria-hidden="true">
-      <span class="tile-speaker">🔊</span>
-      <span class="tile-mark"> </span>
-    </span>
-  `
-  window.document.body.appendChild(preview)
-  return preview
-}
-
 function App() {
   const savedSettings = loadSavedSettings()
   const initialLanguage =
@@ -304,6 +284,7 @@ function App() {
   const [recentTileIds, setRecentTileIds] = useState([])
   const [showRoundChange, setShowRoundChange] = useState(false)
   const [solvedSentence, setSolvedSentence] = useState('')
+  const [touchInteractionLocked, setTouchInteractionLocked] = useState(false)
   const roundChangeTimeoutRef = useRef(null)
   const activeTileTimeoutRef = useRef(null)
   const suppressPlacedTextTimeoutRef = useRef(null)
@@ -311,11 +292,11 @@ function App() {
   const recentTileTimeoutsRef = useRef({})
   const [voiceInventoryReady, setVoiceInventoryReady] = useState(false)
   const solvedSentenceRef = useRef('')
-  const dragPayloadRef = useRef(null)
-  const dragPreviewRef = useRef(null)
   const pointerDragIndexRef = useRef(null)
+  const pointerDragOriginRef = useRef(null)
   const pointerDragOffsetRef = useRef({ x: 0, y: 0 })
   const pendingPointerDragRef = useRef(null)
+  const touchHoldTimeoutRef = useRef(null)
   const suppressSlotClickRef = useRef(false)
   const suppressTileClickRef = useRef(false)
 
@@ -345,6 +326,39 @@ function App() {
     ? formatSolvedDisplayTexts(selectedLanguage, placedSegments)
     : []
 
+  function activatePendingDrag(pendingDrag, clientX, clientY) {
+    pointerDragIndexRef.current =
+      pendingDrag.origin.type === 'slot' ? pendingDrag.origin.index : null
+    pointerDragOriginRef.current = pendingDrag.origin
+    pointerDragOffsetRef.current = {
+      x: Math.min(
+        Math.max(clientX - pendingDrag.tileRect.left, 0),
+        pendingDrag.tileRect.width,
+      ),
+      y: Math.min(
+        Math.max(clientY - pendingDrag.tileRect.top, 0),
+        pendingDrag.tileRect.height,
+      ),
+    }
+    setHoveredSlotIndex(
+      pendingDrag.origin.type === 'slot' ? pendingDrag.origin.index : null,
+    )
+    setDraggingSlotIndex(
+      pendingDrag.origin.type === 'slot' ? pendingDrag.origin.index : null,
+    )
+    setSuppressPlacedText(pendingDrag.origin.type === 'slot')
+    suppressTileClickRef.current = true
+    setPointerDragTile({
+      text: pendingDrag.segment.text,
+      id: pendingDrag.segment.id,
+      x: pendingDrag.tileRect.left,
+      y: pendingDrag.tileRect.top,
+      width: pendingDrag.tileRect.width,
+      height: pendingDrag.tileRect.height,
+    })
+    pendingPointerDragRef.current = null
+  }
+
   useEffect(() => {
     if (!speechSupported) {
       return undefined
@@ -367,6 +381,7 @@ function App() {
     window.speechSynthesis.onvoiceschanged = updateVoice
 
       return () => {
+      window.clearTimeout(touchHoldTimeoutRef.current)
       window.speechSynthesis?.cancel()
       window.speechSynthesis.onvoiceschanged = null
       window.clearTimeout(roundChangeTimeoutRef.current)
@@ -405,6 +420,33 @@ function App() {
   }, [solvedSentence])
 
   useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined
+    }
+
+    const html = window.document.documentElement
+    const body = window.document.body
+    const previousHtmlOverflow = html.style.overflow
+    const previousHtmlOverscroll = html.style.overscrollBehavior
+    const previousBodyOverflow = body.style.overflow
+    const previousBodyOverscroll = body.style.overscrollBehavior
+
+    if (touchInteractionLocked) {
+      html.style.overflow = 'hidden'
+      html.style.overscrollBehavior = 'none'
+      body.style.overflow = 'hidden'
+      body.style.overscrollBehavior = 'none'
+    }
+
+    return () => {
+      html.style.overflow = previousHtmlOverflow
+      html.style.overscrollBehavior = previousHtmlOverscroll
+      body.style.overflow = previousBodyOverflow
+      body.style.overscrollBehavior = previousBodyOverscroll
+    }
+  }, [touchInteractionLocked])
+
+  useEffect(() => {
     function updatePointerDragPosition(event) {
       if (
         pointerDragIndexRef.current === null &&
@@ -415,34 +457,14 @@ function App() {
         const movedY = event.clientY - pendingDrag.startY
         const distance = Math.hypot(movedX, movedY)
 
-        if (distance >= 6) {
-          pointerDragIndexRef.current = pendingDrag.index
-          pointerDragOffsetRef.current = {
-            x: Math.min(
-              Math.max(event.clientX - pendingDrag.tileRect.left, 0),
-              pendingDrag.tileRect.width,
-            ),
-            y: Math.min(
-              Math.max(event.clientY - pendingDrag.tileRect.top, 0),
-              pendingDrag.tileRect.height,
-            ),
-          }
-          setHoveredSlotIndex(pendingDrag.index)
-          setDraggingSlotIndex(pendingDrag.index)
-          setSuppressPlacedText(true)
-          setPointerDragTile({
-            text: pendingDrag.segment.text,
-            id: pendingDrag.segment.id,
-            x: pendingDrag.tileRect.left,
-            y: pendingDrag.tileRect.top,
-            width: pendingDrag.tileRect.width,
-            height: pendingDrag.tileRect.height,
-          })
+        if (pendingDrag.pointerType === 'touch' && distance >= 18) {
+          window.clearTimeout(touchHoldTimeoutRef.current)
           pendingPointerDragRef.current = null
+          setTouchInteractionLocked(false)
         }
       }
 
-      if (pointerDragIndexRef.current === null) {
+      if (!pointerDragOriginRef.current) {
         return
       }
 
@@ -458,12 +480,15 @@ function App() {
     }
 
     function clearPointerDrag() {
+      window.clearTimeout(touchHoldTimeoutRef.current)
       pendingPointerDragRef.current = null
       pointerDragIndexRef.current = null
+      pointerDragOriginRef.current = null
       setHoveredSlotIndex(null)
       setBankHovered(false)
       setPointerDragTile(null)
       setDraggingSlotIndex(null)
+      setTouchInteractionLocked(false)
       window.setTimeout(() => {
         suppressSlotClickRef.current = false
         suppressTileClickRef.current = false
@@ -598,8 +623,10 @@ function App() {
     setDraggingSlotIndex(null)
     setSuppressPlacedText(false)
     setActiveTileId(null)
-    dragPayloadRef.current = null
+    setTouchInteractionLocked(false)
     pendingPointerDragRef.current = null
+    pointerDragOriginRef.current = null
+    window.clearTimeout(touchHoldTimeoutRef.current)
     setShowRoundChange(true)
     window.clearTimeout(roundChangeTimeoutRef.current)
     window.clearTimeout(activeTileTimeoutRef.current)
@@ -630,9 +657,11 @@ function App() {
     setPointerDragTile(null)
     setDraggingSlotIndex(null)
     setActiveTileId(null)
-    dragPayloadRef.current = null
+    setTouchInteractionLocked(false)
     pendingPointerDragRef.current = null
     pointerDragIndexRef.current = null
+    pointerDragOriginRef.current = null
+    window.clearTimeout(touchHoldTimeoutRef.current)
     suppressSlotClickRef.current = false
     suppressTileClickRef.current = false
     window.clearTimeout(activeTileTimeoutRef.current)
@@ -715,91 +744,6 @@ function App() {
     return segmentById[placedSegment.id] ?? placedSegment
   }
 
-  function handleDragStart(event, segment, origin) {
-    dragPayloadRef.current = {
-      origin,
-      segment,
-    }
-    suppressTileClickRef.current = true
-    setHoveredSlotIndex(origin.type === 'slot' ? origin.index : null)
-    if (origin.type === 'slot') {
-      setDraggingSlotIndex(origin.index)
-      setSuppressPlacedText(true)
-    }
-    event.dataTransfer.effectAllowed = 'move'
-    event.dataTransfer.setData('text/plain', segment.id)
-    const sourceRect = event.currentTarget.getBoundingClientRect()
-    const preview = createDragPreviewElement(sourceRect)
-    if (preview) {
-      dragPreviewRef.current = preview
-      event.dataTransfer.setDragImage(preview, preview.offsetWidth / 2, preview.offsetHeight / 2)
-    }
-  }
-
-  function handleDragEnd() {
-    dragPayloadRef.current = null
-    setHoveredSlotIndex(null)
-    dragPreviewRef.current?.remove()
-    dragPreviewRef.current = null
-    setDraggingSlotIndex(null)
-    window.clearTimeout(suppressPlacedTextTimeoutRef.current)
-    suppressPlacedTextTimeoutRef.current = window.setTimeout(() => {
-      setSuppressPlacedText(false)
-    }, 120)
-    window.setTimeout(() => {
-      suppressTileClickRef.current = false
-    }, 0)
-  }
-
-  function allowDrop(event) {
-    event.preventDefault()
-    event.dataTransfer.dropEffect = 'move'
-  }
-
-  function handleSlotDrop(slotIndex) {
-    const dragPayload = dragPayloadRef.current
-    if (!dragPayload) {
-      return
-    }
-
-    const { origin, segment } = dragPayload
-    const nextPlacedSegments = [...placedSegments]
-
-    if (origin.type === 'slot') {
-      const fromIndex = origin.index
-      const existingAtTarget = nextPlacedSegments[slotIndex]
-      nextPlacedSegments[fromIndex] = existingAtTarget ?? null
-      nextPlacedSegments[slotIndex] = segment
-      setHoveredSlotIndex(null)
-      setPlacedSegmentsWithSolve(nextPlacedSegments)
-      return
-    }
-
-    const existingIndex = nextPlacedSegments.findIndex(
-      (placedSegment) => placedSegment?.id === segment.id,
-    )
-
-    if (existingIndex >= 0) {
-      nextPlacedSegments[existingIndex] = null
-    }
-
-    nextPlacedSegments[slotIndex] = segment
-    setHoveredSlotIndex(null)
-    setPlacedSegmentsWithSolve(nextPlacedSegments)
-  }
-
-  function handleLineDrop() {
-    const dragPayload = dragPayloadRef.current
-    if (!dragPayload || dragPayload.origin.type !== 'slot') {
-      return
-    }
-
-    const nextPlacedSegments = [...placedSegments]
-    nextPlacedSegments[dragPayload.origin.index] = null
-    setHoveredSlotIndex(null)
-    setPlacedSegmentsWithSolve(nextPlacedSegments)
-  }
-
   function handleSlotClear(slotIndex) {
     if (!placedSegments[slotIndex]) {
       return
@@ -842,58 +786,146 @@ function App() {
       return
     }
 
+    window.clearTimeout(touchHoldTimeoutRef.current)
     const placedCard = event.currentTarget.querySelector('.placed-card')
     const tileRect = placedCard?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect()
+    if (event.pointerType !== 'touch') {
+      activatePendingDrag(
+        {
+          origin: { type: 'slot', index },
+          pointerType: event.pointerType,
+          segment,
+          tileRect,
+        },
+        event.clientX,
+        event.clientY,
+      )
+      suppressSlotClickRef.current = false
+      return
+    }
+
     pendingPointerDragRef.current = {
-      index,
+      origin: { type: 'slot', index },
+      pointerType: event.pointerType,
       segment,
       tileRect,
       startX: event.clientX,
       startY: event.clientY,
     }
     suppressSlotClickRef.current = false
+    if (event.pointerType === 'touch') {
+      setTouchInteractionLocked(true)
+      touchHoldTimeoutRef.current = window.setTimeout(() => {
+        const pendingDrag = pendingPointerDragRef.current
+        if (!pendingDrag) {
+          return
+        }
+        activatePendingDrag(pendingDrag, pendingDrag.startX, pendingDrag.startY)
+      }, TOUCH_DRAG_HOLD_MS)
+    }
+  }
+
+  function handleBankTilePointerDown(event, segment) {
+    if (!segment || (voiceInventoryReady && !hasLanguageVoice)) {
+      return
+    }
+
+    window.clearTimeout(touchHoldTimeoutRef.current)
+    const tileRect = event.currentTarget.getBoundingClientRect()
+    if (event.pointerType !== 'touch') {
+      activatePendingDrag(
+        {
+          origin: { type: 'bank' },
+          pointerType: event.pointerType,
+          segment,
+          tileRect,
+        },
+        event.clientX,
+        event.clientY,
+      )
+      suppressTileClickRef.current = false
+      return
+    }
+
+    pendingPointerDragRef.current = {
+      origin: { type: 'bank' },
+      pointerType: event.pointerType,
+      segment,
+      tileRect,
+      startX: event.clientX,
+      startY: event.clientY,
+    }
+    suppressTileClickRef.current = false
+    if (event.pointerType === 'touch') {
+      setTouchInteractionLocked(true)
+      touchHoldTimeoutRef.current = window.setTimeout(() => {
+        const pendingDrag = pendingPointerDragRef.current
+        if (!pendingDrag) {
+          return
+        }
+        activatePendingDrag(pendingDrag, pendingDrag.startX, pendingDrag.startY)
+      }, TOUCH_DRAG_HOLD_MS)
+    }
   }
 
   function handleSlotPointerEnter(index) {
-    const fromIndex = pointerDragIndexRef.current
-    if (fromIndex === null) {
+    if (!pointerDragOriginRef.current && !pointerDragTile) {
       return
     }
 
     setHoveredSlotIndex(index)
+    setBankHovered(false)
   }
 
   function handleSlotPointerUp(index) {
-    const fromIndex = pointerDragIndexRef.current
-    if (fromIndex === null) {
+    const dragOrigin = pointerDragOriginRef.current
+    if (!dragOrigin || !pointerDragTile) {
       return
     }
 
-    if (fromIndex !== index) {
-      suppressSlotClickRef.current = true
-      movePlacedSegmentByPointer(fromIndex, index)
+    if (dragOrigin.type === 'slot') {
+      const fromIndex = dragOrigin.index
+
+      if (fromIndex !== index) {
+        suppressSlotClickRef.current = true
+        movePlacedSegmentByPointer(fromIndex, index)
+      }
+    } else {
+      const movingSegment =
+        round.orderedSegments.find((segment) => segment.id === pointerDragTile.id) ?? null
+
+      if (movingSegment) {
+        const nextPlacedSegments = [...placedSegments]
+        const existingIndex = nextPlacedSegments.findIndex(
+          (placedSegment) => placedSegment?.id === movingSegment.id,
+        )
+
+        if (existingIndex >= 0) {
+          nextPlacedSegments[existingIndex] = null
+        }
+
+        nextPlacedSegments[index] = movingSegment
+        suppressTileClickRef.current = true
+        setPlacedSegmentsWithSolve(nextPlacedSegments)
+      }
     }
 
+    pointerDragOriginRef.current = null
     pointerDragIndexRef.current = null
+    setPointerDragTile(null)
+    setDraggingSlotIndex(null)
     setHoveredSlotIndex(null)
+    setBankHovered(false)
+    setTouchInteractionLocked(false)
+    window.clearTimeout(touchHoldTimeoutRef.current)
     window.clearTimeout(suppressPlacedTextTimeoutRef.current)
     suppressPlacedTextTimeoutRef.current = window.setTimeout(() => {
       setSuppressPlacedText(false)
     }, 120)
   }
 
-  function handleSlotDragEnter(index) {
-    if (!dragPayloadRef.current || dragPayloadRef.current.origin.type !== 'bank') {
-      return
-    }
-
-    setBankHovered(false)
-    suppressSlotClickRef.current = true
-    setHoveredSlotIndex(index)
-  }
-
   function handleBankPointerEnter() {
-    if (pointerDragIndexRef.current === null) {
+    if (!pointerDragOriginRef.current || !pointerDragTile) {
       return
     }
 
@@ -902,7 +934,7 @@ function App() {
   }
 
   function handleBankPointerLeave() {
-    if (pointerDragIndexRef.current === null) {
+    if (!pointerDragOriginRef.current || !pointerDragTile) {
       return
     }
 
@@ -910,39 +942,28 @@ function App() {
   }
 
   function handleBankPointerUp() {
-    const fromIndex = pointerDragIndexRef.current
-    if (fromIndex === null) {
+    const dragOrigin = pointerDragOriginRef.current
+    if (!dragOrigin || !pointerDragTile) {
       return
     }
 
-    suppressSlotClickRef.current = true
+    if (dragOrigin.type === 'slot') {
+      suppressSlotClickRef.current = true
+      handleSlotClear(dragOrigin.index)
+    }
+
+    pointerDragOriginRef.current = null
     pointerDragIndexRef.current = null
-    setHoveredSlotIndex(null)
-    setBankHovered(false)
     setPointerDragTile(null)
     setDraggingSlotIndex(null)
-    handleSlotClear(fromIndex)
-  }
-
-  function handleBankDragEnter() {
-    if (!dragPayloadRef.current || dragPayloadRef.current.origin.type !== 'slot') {
-      return
-    }
-
     setHoveredSlotIndex(null)
-    setBankHovered(true)
-  }
-
-  function handleBankDrop(event) {
-    event.preventDefault()
-
-    const dragPayload = dragPayloadRef.current
-    if (!dragPayload || dragPayload.origin.type !== 'slot') {
-      return
-    }
-
     setBankHovered(false)
-    handleSlotClear(dragPayload.origin.index)
+    setTouchInteractionLocked(false)
+    window.clearTimeout(touchHoldTimeoutRef.current)
+    window.clearTimeout(suppressPlacedTextTimeoutRef.current)
+    suppressPlacedTextTimeoutRef.current = window.setTimeout(() => {
+      setSuppressPlacedText(false)
+    }, 120)
   }
 
   return (
@@ -1072,8 +1093,6 @@ function App() {
           style={{
             gridTemplateColumns: `repeat(${round.orderedSegments.length}, minmax(110px, 1fr))`,
           }}
-          onDragOver={allowDrop}
-          onDrop={handleLineDrop}
         >
           {placedSegments.map((segment, index) => (
             (() => {
@@ -1124,12 +1143,6 @@ function App() {
                   ? (event) => handlePlacedSlotKeyDown(event, visibleSegment, index)
                   : undefined
               }
-              onDragOver={allowDrop}
-              onDragEnter={() => handleSlotDragEnter(index)}
-              onDrop={(event) => {
-                event.preventDefault()
-                handleSlotDrop(index)
-              }}
             >
               {visibleSegment ? (
                 <div
@@ -1189,9 +1202,6 @@ function App() {
           onPointerEnter={handleBankPointerEnter}
           onPointerLeave={handleBankPointerLeave}
           onPointerUp={handleBankPointerUp}
-          onDragOver={allowDrop}
-          onDragEnter={handleBankDragEnter}
-          onDrop={handleBankDrop}
         >
           {bankSegments.map((segment, index) =>
             segment ? (
@@ -1199,7 +1209,6 @@ function App() {
                 key={segment.id}
                 role="button"
                 tabIndex={voiceInventoryReady && !hasLanguageVoice ? -1 : 0}
-                draggable
                 aria-disabled={voiceInventoryReady && !hasLanguageVoice}
                 className={`sound-tile ${activeTileId === segment.id ? 'playing' : ''} ${
                   revealWhilePlaying && activeTileId === segment.id ? 'revealed' : ''
@@ -1211,8 +1220,7 @@ function App() {
                   handleTileClick(segment)
                 }}
                 onKeyDown={(event) => handleTileKeyDown(event, segment)}
-                onDragStart={(event) => handleDragStart(event, segment, { type: 'bank' })}
-                onDragEnd={handleDragEnd}
+                onPointerDown={(event) => handleBankTilePointerDown(event, segment)}
                 aria-label={`${ui.playSegment} ${segment.position + 1}`}
               >
                 <span className="tile-face tile-front" aria-hidden="true">
