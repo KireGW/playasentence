@@ -20,6 +20,7 @@
   --accent-soft: #ffd39a;
   --shadow: 0 22px 50px rgba(53, 39, 15, 0.12);
   --heading: Georgia, 'Times New Roman', serif;
+  --ui-font: 'Trebuchet MS', 'Gill Sans', 'Avenir Next', sans-serif;
 }
 
 html {

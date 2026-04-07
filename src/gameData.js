@@ -1067,7 +1067,7 @@ const UI_STRINGS = {
     restart: 'Start over',
     newPuzzle: 'New puzzle',
     solved: 'Solved',
-    tryAgain: 'Try again',
+    tryAgain: 'Not quite there yet.',
   },
   spanish: {
     eyebrow: 'Rompecabezas Auditivo',
@@ -1097,7 +1097,7 @@ const UI_STRINGS = {
     restart: 'Empezar de nuevo',
     newPuzzle: 'Nueva frase',
     solved: 'Resuelto',
-    tryAgain: 'Inténtalo de nuevo',
+    tryAgain: 'Aún no está del todo.',
   },
   french: {
     eyebrow: "Puzzle D'Ecoute",
@@ -1128,7 +1128,7 @@ const UI_STRINGS = {
     restart: 'Recommencer',
     newPuzzle: 'Nouvelle phrase',
     solved: 'Réussi',
-    tryAgain: 'Essaie encore',
+    tryAgain: 'Pas tout a fait encore.',
   },
   italian: {
     eyebrow: 'Puzzle di Ascolto',
@@ -1159,7 +1159,7 @@ const UI_STRINGS = {
     restart: 'Ricomincia',
     newPuzzle: 'Nuova frase',
     solved: 'Risolto',
-    tryAgain: 'Riprova',
+    tryAgain: 'Non ancora del tutto.',
   },
   german: {
     eyebrow: 'Hör-Puzzle',
@@ -1190,7 +1190,7 @@ const UI_STRINGS = {
     restart: 'Neu beginnen',
     newPuzzle: 'Neues Rätsel',
     solved: 'Gelöst',
-    tryAgain: 'Versuch es noch einmal',
+    tryAgain: 'Noch nicht ganz richtig.',
   },
   mandarin: {
     eyebrow: '听力拼句游戏',
@@ -1219,7 +1219,7 @@ const UI_STRINGS = {
     restart: '重新开始',
     newPuzzle: '新题目',
     solved: '完成',
-    tryAgain: '再试一次',
+    tryAgain: '还差一点。',
   },
   swedish: {
     eyebrow: 'Lyssningspussel',
@@ -1249,7 +1249,7 @@ const UI_STRINGS = {
     restart: 'Börja om',
     newPuzzle: 'Ny mening',
     solved: 'Klar',
-    tryAgain: 'Försök igen',
+    tryAgain: 'Inte riktigt där ännu.',
   },
 }
 
