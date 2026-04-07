@@ -8,8 +8,6 @@ import {
   getLanguageConfig,
 } from './gameData.js'
 
-const TOUCH_DRAG_HOLD_MS = 500
-
 const speechSupported =
   typeof window !== 'undefined' && 'speechSynthesis' in window
 
@@ -296,8 +294,8 @@ function App() {
   const pointerDragIndexRef = useRef(null)
   const pointerDragOriginRef = useRef(null)
   const pointerDragOffsetRef = useRef({ x: 0, y: 0 })
+  const pointerPositionRef = useRef({ x: 0, y: 0 })
   const pendingPointerDragRef = useRef(null)
-  const touchHoldTimeoutRef = useRef(null)
   const suppressSlotClickRef = useRef(false)
   const suppressTileClickRef = useRef(false)
 
@@ -382,7 +380,6 @@ function App() {
     window.speechSynthesis.onvoiceschanged = updateVoice
 
       return () => {
-      window.clearTimeout(touchHoldTimeoutRef.current)
       window.speechSynthesis?.cancel()
       window.speechSynthesis.onvoiceschanged = null
       window.clearTimeout(roundChangeTimeoutRef.current)
@@ -448,9 +445,11 @@ function App() {
   }, [touchInteractionLocked])
 
   useEffect(() => {
-    function getTouchDropTarget(clientX, clientY) {
-      const hoveredElement = window.document.elementFromPoint(clientX, clientY)
-      const slotElement = hoveredElement?.closest?.('[data-slot-index]')
+    function getDropTarget(clientX, clientY) {
+      const elementsAtPoint = window.document.elementsFromPoint(clientX, clientY)
+      const slotElement = elementsAtPoint.find((element) =>
+        element?.closest?.('[data-slot-index]'),
+      )?.closest?.('[data-slot-index]')
       if (slotElement) {
         return {
           type: 'slot',
@@ -458,7 +457,9 @@ function App() {
         }
       }
 
-      const bankElement = hoveredElement?.closest?.('[data-bank-dropzone="true"]')
+      const bankElement = elementsAtPoint.find((element) =>
+        element?.closest?.('[data-bank-dropzone="true"]'),
+      )?.closest?.('[data-bank-dropzone="true"]')
       if (bankElement) {
         return { type: 'bank' }
       }
@@ -467,6 +468,11 @@ function App() {
     }
 
     function updatePointerDragPosition(event) {
+      pointerPositionRef.current = {
+        x: event.clientX,
+        y: event.clientY,
+      }
+
       if (
         pointerDragIndexRef.current === null &&
         pendingPointerDragRef.current
@@ -477,7 +483,6 @@ function App() {
         const distance = Math.hypot(movedX, movedY)
 
         if (pendingDrag.pointerType === 'touch' && distance >= 18) {
-          window.clearTimeout(touchHoldTimeoutRef.current)
           pendingPointerDragRef.current = null
           setTouchInteractionLocked(false)
         }
@@ -497,28 +502,27 @@ function App() {
           : currentTile,
       )
 
-      if (event.pointerType === 'touch') {
-        const touchTarget = getTouchDropTarget(event.clientX, event.clientY)
-        setHoveredSlotIndex(
-          touchTarget?.type === 'slot' ? touchTarget.index : null,
-        )
-        setBankHovered(touchTarget?.type === 'bank')
-      }
+      const dropTarget = getDropTarget(event.clientX, event.clientY)
+      setHoveredSlotIndex(dropTarget?.type === 'slot' ? dropTarget.index : null)
+      setBankHovered(dropTarget?.type === 'bank')
     }
 
     function clearPointerDrag(event) {
-      if (event.pointerType === 'touch' && pointerDragOriginRef.current && pointerDragTile) {
-        const touchTarget = getTouchDropTarget(event.clientX, event.clientY)
+      const releaseX = event.clientX ?? pointerPositionRef.current.x
+      const releaseY = event.clientY ?? pointerPositionRef.current.y
 
-        if (touchTarget?.type === 'slot') {
+      if (pointerDragOriginRef.current && pointerDragTile) {
+        const dropTarget = getDropTarget(releaseX, releaseY)
+
+        if (dropTarget?.type === 'slot') {
           if (pointerDragOriginRef.current.type === 'slot') {
-            if (pointerDragOriginRef.current.index !== touchTarget.index) {
+            if (pointerDragOriginRef.current.index !== dropTarget.index) {
               suppressSlotClickRef.current = true
               const nextPlacedSegments = [...placedSegments]
               const movingSegment =
                 nextPlacedSegments[pointerDragOriginRef.current.index]
-              const targetSegment = nextPlacedSegments[touchTarget.index]
-              nextPlacedSegments[touchTarget.index] = movingSegment
+              const targetSegment = nextPlacedSegments[dropTarget.index]
+              nextPlacedSegments[dropTarget.index] = movingSegment
               nextPlacedSegments[pointerDragOriginRef.current.index] =
                 targetSegment ?? null
               setSelectedSlotIndex(null)
@@ -540,13 +544,13 @@ function App() {
                 nextPlacedSegments[existingIndex] = null
               }
 
-              nextPlacedSegments[touchTarget.index] = movingSegment
+              nextPlacedSegments[dropTarget.index] = movingSegment
               suppressTileClickRef.current = true
               setPlacedSegmentsWithSolveRef.current?.(nextPlacedSegments)
             }
           }
         } else if (
-          touchTarget?.type === 'bank' &&
+          dropTarget?.type === 'bank' &&
           pointerDragOriginRef.current.type === 'slot'
         ) {
           suppressSlotClickRef.current = true
@@ -559,7 +563,6 @@ function App() {
         }
       }
 
-      window.clearTimeout(touchHoldTimeoutRef.current)
       pendingPointerDragRef.current = null
       pointerDragIndexRef.current = null
       pointerDragOriginRef.current = null
@@ -750,7 +753,6 @@ function App() {
     setTouchInteractionLocked(false)
     pendingPointerDragRef.current = null
     pointerDragOriginRef.current = null
-    window.clearTimeout(touchHoldTimeoutRef.current)
     setShowRoundChange(true)
     window.clearTimeout(roundChangeTimeoutRef.current)
     window.clearTimeout(activeTileTimeoutRef.current)
@@ -785,7 +787,6 @@ function App() {
     pendingPointerDragRef.current = null
     pointerDragIndexRef.current = null
     pointerDragOriginRef.current = null
-    window.clearTimeout(touchHoldTimeoutRef.current)
     suppressSlotClickRef.current = false
     suppressTileClickRef.current = false
     window.clearTimeout(activeTileTimeoutRef.current)
@@ -910,9 +911,12 @@ function App() {
       return
     }
 
-    window.clearTimeout(touchHoldTimeoutRef.current)
     const placedCard = event.currentTarget.querySelector('.placed-card')
     const tileRect = placedCard?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect()
+    pointerPositionRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+    }
     if (event.pointerType !== 'touch') {
       activatePendingDrag(
         {
@@ -928,25 +932,18 @@ function App() {
       return
     }
 
-    pendingPointerDragRef.current = {
-      origin: { type: 'slot', index },
-      pointerType: event.pointerType,
-      segment,
-      tileRect,
-      startX: event.clientX,
-      startY: event.clientY,
-    }
     suppressSlotClickRef.current = false
-    if (event.pointerType === 'touch') {
-      setTouchInteractionLocked(true)
-      touchHoldTimeoutRef.current = window.setTimeout(() => {
-        const pendingDrag = pendingPointerDragRef.current
-        if (!pendingDrag) {
-          return
-        }
-        activatePendingDrag(pendingDrag, pendingDrag.startX, pendingDrag.startY)
-      }, TOUCH_DRAG_HOLD_MS)
-    }
+    setTouchInteractionLocked(true)
+    activatePendingDrag(
+      {
+        origin: { type: 'slot', index },
+        pointerType: event.pointerType,
+        segment,
+        tileRect,
+      },
+      event.clientX,
+      event.clientY,
+    )
   }
 
   function handleBankTilePointerDown(event, segment) {
@@ -954,8 +951,11 @@ function App() {
       return
     }
 
-    window.clearTimeout(touchHoldTimeoutRef.current)
     const tileRect = event.currentTarget.getBoundingClientRect()
+    pointerPositionRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+    }
     if (event.pointerType !== 'touch') {
       activatePendingDrag(
         {
@@ -971,25 +971,18 @@ function App() {
       return
     }
 
-    pendingPointerDragRef.current = {
-      origin: { type: 'bank' },
-      pointerType: event.pointerType,
-      segment,
-      tileRect,
-      startX: event.clientX,
-      startY: event.clientY,
-    }
     suppressTileClickRef.current = false
-    if (event.pointerType === 'touch') {
-      setTouchInteractionLocked(true)
-      touchHoldTimeoutRef.current = window.setTimeout(() => {
-        const pendingDrag = pendingPointerDragRef.current
-        if (!pendingDrag) {
-          return
-        }
-        activatePendingDrag(pendingDrag, pendingDrag.startX, pendingDrag.startY)
-      }, TOUCH_DRAG_HOLD_MS)
-    }
+    setTouchInteractionLocked(true)
+    activatePendingDrag(
+      {
+        origin: { type: 'bank' },
+        pointerType: event.pointerType,
+        segment,
+        tileRect,
+      },
+      event.clientX,
+      event.clientY,
+    )
   }
 
   function handleSlotPointerEnter(index) {
@@ -1001,7 +994,11 @@ function App() {
     setBankHovered(false)
   }
 
-  function handleSlotPointerUp(index) {
+  function handleSlotPointerUp(index, event) {
+    if (event.pointerType === 'touch') {
+      return
+    }
+
     const dragOrigin = pointerDragOriginRef.current
     if (!dragOrigin || !pointerDragTile) {
       return
@@ -1041,7 +1038,6 @@ function App() {
     setHoveredSlotIndex(null)
     setBankHovered(false)
     setTouchInteractionLocked(false)
-    window.clearTimeout(touchHoldTimeoutRef.current)
     window.clearTimeout(suppressPlacedTextTimeoutRef.current)
     suppressPlacedTextTimeoutRef.current = window.setTimeout(() => {
       setSuppressPlacedText(false)
@@ -1065,7 +1061,11 @@ function App() {
     setBankHovered(false)
   }
 
-  function handleBankPointerUp() {
+  function handleBankPointerUp(event) {
+    if (event.pointerType === 'touch') {
+      return
+    }
+
     const dragOrigin = pointerDragOriginRef.current
     if (!dragOrigin || !pointerDragTile) {
       return
@@ -1083,7 +1083,6 @@ function App() {
     setHoveredSlotIndex(null)
     setBankHovered(false)
     setTouchInteractionLocked(false)
-    window.clearTimeout(touchHoldTimeoutRef.current)
     window.clearTimeout(suppressPlacedTextTimeoutRef.current)
     suppressPlacedTextTimeoutRef.current = window.setTimeout(() => {
       setSuppressPlacedText(false)
@@ -1262,7 +1261,7 @@ function App() {
                   : undefined
               }
               onPointerEnter={() => handleSlotPointerEnter(index)}
-              onPointerUp={() => handleSlotPointerUp(index)}
+              onPointerUp={(event) => handleSlotPointerUp(index, event)}
               onKeyDown={
                 visibleSegment
                   ? (event) => handlePlacedSlotKeyDown(event, visibleSegment, index)
