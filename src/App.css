@@ -1,10 +1,13 @@
 .game-shell {
   min-height: 100svh;
+  width: 100%;
+  max-width: 100%;
   display: grid;
   grid-template-columns: minmax(290px, 360px) minmax(0, 1fr);
   gap: 18px;
   padding: 18px;
   box-sizing: border-box;
+  overflow-x: clip;
 }
 
 .sidebar,
@@ -17,6 +20,7 @@
 }
 
 .sidebar {
+  min-width: 0;
   display: flex;
   flex-direction: column;
   gap: 12px;
@@ -171,6 +175,7 @@
 }
 
 .board {
+  min-width: 0;
   border-radius: 36px;
   padding: 24px;
   background:
@@ -439,6 +444,24 @@
     0 0 0 1px rgba(255, 255, 255, 0.58) inset;
 }
 
+.placed-card.sound-tile {
+  border-radius: 22px;
+  clip-path: inset(0 round 22px);
+}
+
+.placed-card.sound-tile::before {
+  inset: 0;
+  border-radius: 22px;
+}
+
+.placed-card.sound-tile::after {
+  display: none;
+}
+
+.placed-card .tile-face {
+  border-radius: 22px;
+}
+
 .placed-card.playing,
 .placed-card.recent {
   transform: none;
@@ -539,7 +562,7 @@
 }
 
 .tile-bank {
-  padding: 0;
+  padding: 0 18px;
   border-radius: 0;
   border: 0;
   background: transparent;
@@ -582,10 +605,15 @@
   width: calc(100% - 20px);
   justify-self: center;
   border-radius: 22px;
+  clip-path: none;
   box-shadow:
     0 20px 28px rgba(52, 40, 18, 0.18),
     0 6px 16px rgba(52, 40, 18, 0.08),
     0 0 0 1px rgba(255, 255, 255, 0.56) inset;
+}
+
+.tile-bank .sound-tile .tile-face {
+  border-radius: 22px;
 }
 
 .bank-placeholder {
@@ -897,6 +925,7 @@
     grid-template-columns: 1fr;
     padding: 14px;
     gap: 14px;
+    align-content: start;
   }
 
   .sidebar,
@@ -928,6 +957,7 @@
     overflow-y: hidden;
     scroll-snap-type: x proximity;
     -webkit-overflow-scrolling: touch;
+    max-width: 100%;
   }
 
   .builder-line {
@@ -936,6 +966,7 @@
   }
 
   .tile-bank {
+    padding: 0;
     gap: 12px;
   }
 
@@ -973,6 +1004,14 @@
   .board {
     padding: 18px;
     border-radius: 24px;
+  }
+
+  .status-bar,
+  .round-banner-slot,
+  .solved-banner,
+  .retry-banner,
+  .toolbar {
+    max-width: 100%;
   }
 
   .sidebar h1 {
@@ -1034,6 +1073,10 @@
     min-height: 102px;
   }
 
+  .tile-bank .sound-tile {
+    clip-path: inset(0 round 22px);
+  }
+
   .tile-speaker {
     font-size: 1rem;
   }
@@ -1054,6 +1097,10 @@
 }
 
 @media (max-width: 520px) {
+  .game-shell {
+    padding: 10px;
+  }
+
   .sidebar h1 {
     max-width: none;
   }
@@ -1088,6 +1135,10 @@
   .sound-tile {
     height: 96px;
     min-height: 96px;
+  }
+
+  .tile-bank .sound-tile {
+    clip-path: inset(0 round 22px);
   }
 
   .toolbar {

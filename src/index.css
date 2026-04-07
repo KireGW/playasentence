@@ -37,6 +37,8 @@ body {
   min-height: 100svh;
   color: var(--page-text);
   overscroll-behavior: none;
+  overflow-x: hidden;
+  overflow-y: auto;
 }
 
 button {
@@ -50,5 +52,7 @@ p {
 
 #root {
   min-height: 100svh;
-  overflow: hidden;
+  width: 100%;
+  overflow-x: hidden;
+  overflow-y: visible;
 }

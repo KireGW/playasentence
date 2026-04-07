@@ -290,6 +290,7 @@ function App() {
   const suppressPlacedTextTimeoutRef = useRef(null)
   const solveFrameRef = useRef(null)
   const recentTileTimeoutsRef = useRef({})
+  const setPlacedSegmentsWithSolveRef = useRef(null)
   const [voiceInventoryReady, setVoiceInventoryReady] = useState(false)
   const solvedSentenceRef = useRef('')
   const pointerDragIndexRef = useRef(null)
@@ -447,6 +448,24 @@ function App() {
   }, [touchInteractionLocked])
 
   useEffect(() => {
+    function getTouchDropTarget(clientX, clientY) {
+      const hoveredElement = window.document.elementFromPoint(clientX, clientY)
+      const slotElement = hoveredElement?.closest?.('[data-slot-index]')
+      if (slotElement) {
+        return {
+          type: 'slot',
+          index: Number(slotElement.getAttribute('data-slot-index')),
+        }
+      }
+
+      const bankElement = hoveredElement?.closest?.('[data-bank-dropzone="true"]')
+      if (bankElement) {
+        return { type: 'bank' }
+      }
+
+      return null
+    }
+
     function updatePointerDragPosition(event) {
       if (
         pointerDragIndexRef.current === null &&
@@ -477,9 +496,69 @@ function App() {
             }
           : currentTile,
       )
+
+      if (event.pointerType === 'touch') {
+        const touchTarget = getTouchDropTarget(event.clientX, event.clientY)
+        setHoveredSlotIndex(
+          touchTarget?.type === 'slot' ? touchTarget.index : null,
+        )
+        setBankHovered(touchTarget?.type === 'bank')
+      }
     }
 
-    function clearPointerDrag() {
+    function clearPointerDrag(event) {
+      if (event.pointerType === 'touch' && pointerDragOriginRef.current && pointerDragTile) {
+        const touchTarget = getTouchDropTarget(event.clientX, event.clientY)
+
+        if (touchTarget?.type === 'slot') {
+          if (pointerDragOriginRef.current.type === 'slot') {
+            if (pointerDragOriginRef.current.index !== touchTarget.index) {
+              suppressSlotClickRef.current = true
+              const nextPlacedSegments = [...placedSegments]
+              const movingSegment =
+                nextPlacedSegments[pointerDragOriginRef.current.index]
+              const targetSegment = nextPlacedSegments[touchTarget.index]
+              nextPlacedSegments[touchTarget.index] = movingSegment
+              nextPlacedSegments[pointerDragOriginRef.current.index] =
+                targetSegment ?? null
+              setSelectedSlotIndex(null)
+              setPlacedSegmentsWithSolveRef.current?.(nextPlacedSegments)
+            }
+          } else {
+            const movingSegment =
+              round.orderedSegments.find(
+                (segment) => segment.id === pointerDragTile.id,
+              ) ?? null
+
+            if (movingSegment) {
+              const nextPlacedSegments = [...placedSegments]
+              const existingIndex = nextPlacedSegments.findIndex(
+                (placedSegment) => placedSegment?.id === movingSegment.id,
+              )
+
+              if (existingIndex >= 0) {
+                nextPlacedSegments[existingIndex] = null
+              }
+
+              nextPlacedSegments[touchTarget.index] = movingSegment
+              suppressTileClickRef.current = true
+              setPlacedSegmentsWithSolveRef.current?.(nextPlacedSegments)
+            }
+          }
+        } else if (
+          touchTarget?.type === 'bank' &&
+          pointerDragOriginRef.current.type === 'slot'
+        ) {
+          suppressSlotClickRef.current = true
+          const nextPlacedSegments = [...placedSegments]
+          nextPlacedSegments[pointerDragOriginRef.current.index] = null
+          if (selectedSlotIndex === pointerDragOriginRef.current.index) {
+            setSelectedSlotIndex(null)
+          }
+          setPlacedSegmentsWithSolveRef.current?.(nextPlacedSegments)
+        }
+      }
+
       window.clearTimeout(touchHoldTimeoutRef.current)
       pendingPointerDragRef.current = null
       pointerDragIndexRef.current = null
@@ -504,7 +583,7 @@ function App() {
       window.removeEventListener('pointerup', clearPointerDrag)
       window.removeEventListener('pointercancel', clearPointerDrag)
     }
-  }, [])
+  }, [placedSegments, pointerDragTile, round, selectedSlotIndex])
 
   function speakText(text, tileId = null) {
     if (!speechSupported || (voiceInventoryReady && !hasLanguageVoice)) {
@@ -608,6 +687,51 @@ function App() {
     setPlacedSegments(nextPlacedSegments)
     updateSolvedState(nextPlacedSegments)
   }
+
+  useEffect(() => {
+    setPlacedSegmentsWithSolveRef.current = (nextPlacedSegments) => {
+      setPlacedSegments(nextPlacedSegments)
+      window.cancelAnimationFrame(solveFrameRef.current)
+      const nextPlacedIds = nextPlacedSegments
+        .filter(Boolean)
+        .map((segment) => segment.id)
+
+      if (nextPlacedIds.length !== round.orderedSegments.length) {
+        if (solvedSentenceRef.current.length > 0) {
+          solvedSentenceRef.current = ''
+          setSolvedSentence('')
+        }
+        return
+      }
+
+      const solvedOrder = round.acceptedOrders.find((acceptedOrder) =>
+        acceptedOrder.every((segmentId, index) => nextPlacedIds[index] === segmentId),
+      )
+
+      if (!solvedOrder) {
+        if (solvedSentenceRef.current.length > 0) {
+          solvedSentenceRef.current = ''
+          setSolvedSentence('')
+        }
+        return
+      }
+
+      const nextSolvedSentence = getSolvedSentenceFromIds(solvedOrder)
+      solveFrameRef.current = window.requestAnimationFrame(() => {
+        solvedSentenceRef.current = nextSolvedSentence
+        setSolvedSentence(nextSolvedSentence)
+        speakText(nextSolvedSentence)
+      })
+    }
+  }, [
+    currentLanguage,
+    getSolvedSentenceFromIds,
+    hasLanguageVoice,
+    round,
+    selectedVoiceGender,
+    speakText,
+    voiceInventoryReady,
+  ])
 
   function startNewRound(languageId, level) {
     const nextRound = generateRound(languageId, level)
@@ -1102,6 +1226,7 @@ function App() {
               return (
             <div
               key={`slot-${index}`}
+              data-slot-index={index}
               role={visibleSegment ? 'button' : undefined}
               tabIndex={!(voiceInventoryReady && !hasLanguageVoice) ? 0 : undefined}
               draggable={false}
@@ -1195,6 +1320,7 @@ function App() {
 
         <section
           className={`tile-grid tile-bank ${bankHovered ? 'hovered' : ''}`}
+          data-bank-dropzone="true"
           aria-label={ui.shuffledButtons}
           style={{
             gridTemplateColumns: `repeat(${round.orderedSegments.length}, minmax(110px, 1fr))`,
@@ -1203,8 +1329,13 @@ function App() {
           onPointerLeave={handleBankPointerLeave}
           onPointerUp={handleBankPointerUp}
         >
-          {bankSegments.map((segment, index) =>
-            segment ? (
+          {bankSegments.map((segment, index) => {
+            const isDraggingBankSource =
+              segment &&
+              pointerDragTile?.id === segment.id &&
+              draggingSlotIndex === null
+
+            return segment && !isDraggingBankSource ? (
               <div
                 key={segment.id}
                 role="button"
@@ -1235,8 +1366,8 @@ function App() {
                 className="bank-placeholder"
                 aria-hidden="true"
               />
-            ),
-          )}
+            )
+          })}
         </section>
 
         <div className="toolbar">
