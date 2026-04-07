@@ -263,11 +263,17 @@ function App() {
     VOICE_GENDERS.find((voiceGender) => voiceGender.id === savedSettings?.selectedVoiceGender)
       ?.id ?? 'female'
   const initialRevealWhilePlaying = Boolean(savedSettings?.revealWhilePlaying)
+  const initialCefrExpanded =
+    typeof savedSettings?.cefrExpanded === 'boolean'
+      ? savedSettings.cefrExpanded
+      : false
 
   const [selectedLanguage, setSelectedLanguage] = useState(initialLanguage)
   const [selectedLevel, setSelectedLevel] = useState(initialLevel)
   const [selectedVoiceGender, setSelectedVoiceGender] = useState(initialVoiceGender)
   const [revealWhilePlaying, setRevealWhilePlaying] = useState(initialRevealWhilePlaying)
+  const [cefrExpanded, setCefrExpanded] = useState(initialCefrExpanded)
+  const [sidebarMenuOpen, setSidebarMenuOpen] = useState(false)
   const [round, setRound] = useState(() => generateRound(initialLanguage, initialLevel))
   const [placedSegments, setPlacedSegments] = useState(() =>
     createEmptySlots(round.orderedSegments.length),
@@ -303,7 +309,9 @@ function App() {
   const handleTileClickRef = useRef(null)
   const movePlacedSegmentByPointerRef = useRef(null)
   const lockPlacedFrontBrieflyRef = useRef(null)
+  const sidebarRef = useRef(null)
   const TAP_DRAG_THRESHOLD = 6
+  const [collapsedSidebarHeight, setCollapsedSidebarHeight] = useState(null)
 
   const currentLanguage = getLanguageConfig(selectedLanguage)
   const ui = currentLanguage.ui
@@ -357,7 +365,63 @@ function App() {
     }
   }, [])
 
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined
+    }
+
+    const syncSidebarMode = () => {
+      if (window.innerWidth > 980) {
+        setSidebarMenuOpen(false)
+      }
+    }
+
+    syncSidebarMode()
+    window.addEventListener('resize', syncSidebarMode)
+
+    return () => {
+      window.removeEventListener('resize', syncSidebarMode)
+    }
+  }, [])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || !sidebarRef.current) {
+      return undefined
+    }
+
+    const syncCollapsedSidebarHeight = () => {
+      if (window.innerWidth <= 980 || !sidebarRef.current) {
+        setCollapsedSidebarHeight(null)
+        return
+      }
+
+      if (cefrExpanded) {
+        return
+      }
+
+      setCollapsedSidebarHeight(
+        Math.round(sidebarRef.current.getBoundingClientRect().height),
+      )
+    }
+
+    syncCollapsedSidebarHeight()
+
+    const resizeObserver = new window.ResizeObserver(syncCollapsedSidebarHeight)
+    resizeObserver.observe(sidebarRef.current)
+    window.addEventListener('resize', syncCollapsedSidebarHeight)
+
+    return () => {
+      resizeObserver.disconnect()
+      window.removeEventListener('resize', syncCollapsedSidebarHeight)
+    }
+  }, [cefrExpanded])
+
   function activatePendingDrag(pendingDrag, clientX, clientY) {
+    if (showRoundChange) {
+      setShowRoundChange(false)
+      window.clearTimeout(roundChangeTimeoutRef.current)
+    }
+
     pointerDragIndexRef.current =
       pendingDrag.origin.type === 'slot' ? pendingDrag.origin.index : null
     pointerDragOriginRef.current = pendingDrag.origin
@@ -436,9 +500,11 @@ function App() {
         selectedLevel,
         selectedVoiceGender,
         revealWhilePlaying,
+        cefrExpanded,
       }),
     )
   }, [
+    cefrExpanded,
     revealWhilePlaying,
     selectedLanguage,
     selectedLevel,
@@ -475,6 +541,25 @@ function App() {
       body.style.overscrollBehavior = previousBodyOverscroll
     }
   }, [touchInteractionLocked])
+
+  useEffect(() => {
+    if (typeof window === 'undefined' || window.innerWidth > 980 || !sidebarMenuOpen) {
+      return undefined
+    }
+
+    const html = window.document.documentElement
+    const body = window.document.body
+    const previousHtmlOverflow = html.style.overflow
+    const previousBodyOverflow = body.style.overflow
+
+    html.style.overflow = 'hidden'
+    body.style.overflow = 'hidden'
+
+    return () => {
+      html.style.overflow = previousHtmlOverflow
+      body.style.overflow = previousBodyOverflow
+    }
+  }, [sidebarMenuOpen])
 
   useEffect(() => {
     function getDropTarget(clientX, clientY) {
@@ -638,7 +723,7 @@ function App() {
   }, [placedSegments, pointerDragTile, round, selectedSlotIndex])
 
   function speakText(text, tileId = null) {
-    if (!speechSupported || (voiceInventoryReady && !hasLanguageVoice)) {
+    if (!text || !speechSupported || (voiceInventoryReady && !hasLanguageVoice)) {
       return
     }
 
@@ -693,7 +778,7 @@ function App() {
       .map((segment) => segmentById[segment.id] ?? segment)
 
     if (lineSegments.length === 0) {
-      return round.fullSentence
+      return ''
     }
 
     return lineSegments
@@ -813,9 +898,6 @@ function App() {
       window.clearTimeout(timeoutId)
     })
     recentTileTimeoutsRef.current = {}
-    roundChangeTimeoutRef.current = window.setTimeout(() => {
-      setShowRoundChange(false)
-    }, 1400)
     window.speechSynthesis?.cancel()
   }
 
@@ -852,12 +934,21 @@ function App() {
   }
 
   function handleLevelChange(level) {
+    if (level === selectedLevel) {
+      setCefrExpanded(false)
+      setSidebarMenuOpen(false)
+      return
+    }
+
     setSelectedLevel(level)
+    setCefrExpanded(false)
+    setSidebarMenuOpen(false)
     startNewRound(selectedLanguage, level)
   }
 
   function handleLanguageChange(languageId) {
     setSelectedLanguage(languageId)
+    setSidebarMenuOpen(false)
     startNewRound(languageId, selectedLevel)
   }
 
@@ -867,6 +958,7 @@ function App() {
     }
 
     setSelectedVoiceGender(voiceGender)
+    setSidebarMenuOpen(false)
     window.speechSynthesis?.cancel()
     window.clearTimeout(activeTileTimeoutRef.current)
     setActiveTileId(null)
@@ -874,6 +966,28 @@ function App() {
 
   function handleRevealModeChange(mode) {
     setRevealWhilePlaying(mode === 'on')
+    setSidebarMenuOpen(false)
+  }
+
+  function handleSidebarSurfaceClick(event) {
+    const target = event.target
+    if (!(target instanceof HTMLElement)) {
+      return
+    }
+
+    if (
+      target.closest(
+        'button, [role="button"], a, input, select, textarea, label, .panel',
+      )
+    ) {
+      return
+    }
+
+    if (target.closest('p, h1, h2, h3, h4, h5, h6, strong, span')) {
+      return
+    }
+
+    setSidebarMenuOpen(false)
   }
 
   function handleTileClick(segment) {
@@ -1143,9 +1257,45 @@ function App() {
 
   return (
     <main className="game-shell">
-      <aside className="sidebar">
-        <p className="eyebrow">{ui.eyebrow}</p>
-        <h1>{ui.title}</h1>
+      <div className="mobile-topbar">
+        <p className="eyebrow mobile-title">{ui.eyebrow}</p>
+      </div>
+
+      <button
+        type="button"
+        className="mobile-sidebar-toggle"
+        onClick={() => setSidebarMenuOpen(true)}
+        aria-label={ui.openMenu}
+      >
+        <span className="mobile-sidebar-toggle-bars" aria-hidden="true" />
+        <span className="mobile-sidebar-toggle-label">{ui.menu}</span>
+      </button>
+
+      <button
+        type="button"
+        className={`mobile-sidebar-backdrop ${sidebarMenuOpen ? 'visible' : ''}`}
+        onClick={() => setSidebarMenuOpen(false)}
+        aria-label={ui.closeMenu}
+        tabIndex={sidebarMenuOpen ? 0 : -1}
+      />
+
+      <aside
+        ref={sidebarRef}
+        className={`sidebar ${sidebarMenuOpen ? 'mobile-open' : ''}`}
+        onClick={handleSidebarSurfaceClick}
+      >
+        <div className="sidebar-header">
+          <p className="eyebrow">{ui.eyebrow}</p>
+          <button
+            type="button"
+            className="mobile-sidebar-close"
+            onClick={() => setSidebarMenuOpen(false)}
+            aria-label={ui.closeMenu}
+          >
+            <span aria-hidden="true">×</span>
+          </button>
+        </div>
+        {ui.title ? <h1>{ui.title}</h1> : null}
         <p className="intro">{ui.intro}</p>
 
         <section className="panel language-panel" aria-label={ui.practiceLanguages}>
@@ -1169,21 +1319,52 @@ function App() {
           <section className="panel level-panel" aria-labelledby="level-heading">
             <div className="panel-heading">
               <h2 id="level-heading">{ui.cefrLevel}</h2>
-              <span>{selectedLevel}</span>
-            </div>
-            <div className="level-list" role="list" aria-label={ui.cefrLevels}>
-              {CEFR_LEVELS.map((level) => (
+              <div className="panel-heading-actions">
+                <span>{selectedLevel}</span>
                 <button
-                  key={level}
                   type="button"
-                  className={`level-button ${level === selectedLevel ? 'selected' : ''}`}
-                  onClick={() => handleLevelChange(level)}
+                  className={`panel-toggle ${cefrExpanded ? 'expanded' : ''}`}
+                  onClick={() => setCefrExpanded((current) => !current)}
+                  aria-expanded={cefrExpanded}
+                  aria-controls="cefr-level-list"
+                  aria-label={cefrExpanded ? 'Collapse CEFR levels' : 'Expand CEFR levels'}
                 >
-                  <strong>{level}</strong>
-                  <span>{round.levelDescriptions[level]}</span>
+                  <span className="panel-toggle-glyph" aria-hidden="true" />
                 </button>
-              ))}
+              </div>
             </div>
+            {cefrExpanded ? (
+              <div
+                id="cefr-level-list"
+                className="level-list"
+                role="list"
+                aria-label={ui.cefrLevels}
+              >
+                {CEFR_LEVELS.map((level) => (
+                  <button
+                    key={level}
+                    type="button"
+                    className={`level-button ${level === selectedLevel ? 'selected' : ''}`}
+                    onClick={() => handleLevelChange(level)}
+                  >
+                    <strong>{level}</strong>
+                    <span>{round.levelDescriptions[level]}</span>
+                  </button>
+                ))}
+              </div>
+            ) : (
+              <button
+                type="button"
+                className="level-collapsed-note"
+                onClick={() => setCefrExpanded(true)}
+                aria-expanded="false"
+                aria-controls="cefr-level-list"
+                aria-label={ui.cefrLevels}
+              >
+                <strong>{selectedLevel}</strong>
+                <span>{round.levelDescriptions[selectedLevel]}</span>
+              </button>
+            )}
           </section>
 
           <section className="panel voice-panel" aria-labelledby="voice-heading">
@@ -1243,213 +1424,232 @@ function App() {
 
       </aside>
 
-      <section className={`board ${showRoundChange ? 'board-switched' : ''}`}>
-        <div className="status-bar" aria-live="polite">
-          <span className="status-icon" aria-hidden="true">👂</span>
-          <span>{ui.instruction}</span>
-        </div>
+      <section
+        className={`board ${showRoundChange ? 'board-switched' : ''}`}
+        style={
+          collapsedSidebarHeight
+            ? { minHeight: `${collapsedSidebarHeight}px`, maxHeight: `${collapsedSidebarHeight}px` }
+            : undefined
+        }
+      >
+        <div className="board-arena">
+          <div className="board-top-meta">
+            <div className="status-bar" aria-live="polite">
+              <span className="status-icon" aria-hidden="true">👂</span>
+              <span>{ui.instruction}</span>
+            </div>
 
-        <div className="round-banner-slot" aria-live="polite">
-          <div className={`round-banner ${showRoundChange ? 'visible' : ''}`}>
-            {ui.newPuzzleLoaded}
+            {!speechSupported ? (
+              <div className="status-bar" aria-live="polite">
+                <strong>{ui.speechUnavailable}</strong>
+              </div>
+            ) : null}
           </div>
-        </div>
 
-        {!speechSupported ? (
-          <div className="status-bar" aria-live="polite">
-            <strong>{ui.speechUnavailable}</strong>
-          </div>
-        ) : null}
-
-        <section
-          className={`builder-line ${builderStatus} ${
-            pointerDragTile || suppressPlacedText ? 'pointer-dragging' : ''
-          }`}
-          aria-label={ui.solved}
-          style={{
-            gridTemplateColumns: `repeat(${round.orderedSegments.length}, minmax(var(--tile-column-min, 110px), 1fr))`,
-          }}
-        >
-          {placedSegments.map((segment, index) => (
-            (() => {
-              const isDraggingOrigin = draggingSlotIndex === index && pointerDragTile
-              const visibleSegment = isDraggingOrigin ? null : segment
-
-              return (
-            <div
-              key={`slot-${index}`}
-              data-slot-index={index}
-              role={visibleSegment ? 'button' : undefined}
-              tabIndex={!(voiceInventoryReady && !hasLanguageVoice) ? 0 : undefined}
-              draggable={false}
-              aria-disabled={visibleSegment && voiceInventoryReady && !hasLanguageVoice}
-              aria-label={visibleSegment ? `${ui.playSegment} ${index + 1}` : undefined}
-              className={`drop-slot ${visibleSegment ? 'filled' : 'empty'} ${
-                visibleSegment && activeTileId === visibleSegment.id ? 'playing' : ''
-              } ${
-                visibleSegment &&
-                revealWhilePlaying &&
-                activeTileId === visibleSegment.id
-                  ? 'revealed'
-                  : ''
-              } ${
-                visibleSegment && recentTileIds.includes(visibleSegment.id) ? 'recent' : ''
-              } ${selectedSlotIndex === index ? 'selected' : ''} ${
-                hoveredSlotIndex === index ? 'hovered' : ''
+          <div className="board-core">
+            <section
+              className={`builder-line ${builderStatus} ${
+                pointerDragTile || suppressPlacedText ? 'pointer-dragging' : ''
               }`}
-              onClick={
-                visibleSegment
-                  ? () => {
-                      if (suppressSlotClickRef.current || suppressTileClickRef.current) {
-                        return
-                      }
-                      handleSlotClick(index)
-                    }
-                  : () => handleEmptySlotClick(index)
-              }
-              onDoubleClick={visibleSegment ? () => handleSlotClear(index) : undefined}
-              onPointerDown={
-                visibleSegment
-                  ? (event) => handleSlotPointerDown(event, index, visibleSegment)
-                  : undefined
-              }
-              onPointerEnter={() => handleSlotPointerEnter(index)}
-              onPointerUp={(event) => handleSlotPointerUp(index, event)}
-              onKeyDown={
-                visibleSegment
-                  ? (event) => handlePlacedSlotKeyDown(event, visibleSegment, index)
-                  : undefined
-              }
+              aria-label={ui.solved}
+              style={{
+                '--segment-count': round.orderedSegments.length,
+              }}
             >
-              {visibleSegment ? (
+              {placedSegments.map((segment, index) => (
+                (() => {
+                  const isDraggingOrigin = draggingSlotIndex === index && pointerDragTile
+                  const visibleSegment = isDraggingOrigin ? null : segment
+
+                  return (
                 <div
-                  className={`placed-card sound-tile ${
-                    activeTileId === visibleSegment.id ? 'playing' : ''
+                  key={`slot-${index}`}
+                  data-slot-index={index}
+                  role={visibleSegment ? 'button' : undefined}
+                  tabIndex={!(voiceInventoryReady && !hasLanguageVoice) ? 0 : undefined}
+                  draggable={false}
+                  aria-disabled={visibleSegment && voiceInventoryReady && !hasLanguageVoice}
+                  aria-label={visibleSegment ? `${ui.playSegment} ${index + 1}` : undefined}
+                  className={`drop-slot ${visibleSegment ? 'filled' : 'empty'} ${
+                    visibleSegment && activeTileId === visibleSegment.id ? 'playing' : ''
                   } ${
-                    !isComplete &&
+                    visibleSegment &&
                     revealWhilePlaying &&
                     activeTileId === visibleSegment.id
                       ? 'revealed'
                       : ''
-                  } ${recentTileIds.includes(visibleSegment.id) ? 'recent' : ''} ${
-                    slotSwapClasses[index] ?? ''
                   } ${
-                    isComplete ? 'solved-revealed' : ''
+                    visibleSegment && recentTileIds.includes(visibleSegment.id) ? 'recent' : ''
+                  } ${selectedSlotIndex === index ? 'selected' : ''} ${
+                    hoveredSlotIndex === index ? 'hovered' : ''
                   }`}
-                  aria-hidden="true"
+                  onClick={
+                    visibleSegment
+                      ? () => {
+                          if (suppressSlotClickRef.current || suppressTileClickRef.current) {
+                            return
+                          }
+                          handleSlotClick(index)
+                        }
+                      : () => handleEmptySlotClick(index)
+                  }
+                  onDoubleClick={visibleSegment ? () => handleSlotClear(index) : undefined}
+                  onPointerDown={
+                    visibleSegment
+                      ? (event) => handleSlotPointerDown(event, index, visibleSegment)
+                      : undefined
+                  }
+                  onPointerEnter={() => handleSlotPointerEnter(index)}
+                  onPointerUp={(event) => handleSlotPointerUp(index, event)}
+                  onKeyDown={
+                    visibleSegment
+                      ? (event) => handlePlacedSlotKeyDown(event, visibleSegment, index)
+                      : undefined
+                  }
                 >
-                  <span className="tile-face tile-front" aria-hidden="true">
-                    <span className="tile-speaker">🔊</span>
-                    <span className="tile-mark">
-                      {activeTileId === visibleSegment.id ? '...' : ' '}
-                    </span>
-                  </span>
-                  <span className="tile-face tile-back">
-                    {isComplete ? solvedDisplayTexts[index] : visibleSegment.text}
-                  </span>
+                  {visibleSegment ? (
+                    <div
+                      className={`placed-card sound-tile ${
+                        activeTileId === visibleSegment.id ? 'playing' : ''
+                      } ${
+                        !isComplete &&
+                        revealWhilePlaying &&
+                        activeTileId === visibleSegment.id
+                          ? 'revealed'
+                          : ''
+                      } ${recentTileIds.includes(visibleSegment.id) ? 'recent' : ''} ${
+                        slotSwapClasses[index] ?? ''
+                      } ${
+                        isComplete ? 'solved-revealed' : ''
+                      }`}
+                      aria-hidden="true"
+                    >
+                      <span className="tile-face tile-front" aria-hidden="true">
+                        <span className="tile-speaker">🔊</span>
+                        <span className="tile-mark">
+                          {activeTileId === visibleSegment.id ? '...' : ' '}
+                        </span>
+                      </span>
+                      <span className="tile-face tile-back">
+                        {isComplete ? solvedDisplayTexts[index] : visibleSegment.text}
+                      </span>
+                    </div>
+                  ) : (
+                    <div className="drop-slot-placeholder" aria-hidden="true">
+                      <span className="drop-slot-index">{index + 1}</span>
+                      <span className="drop-slot-dots" />
+                    </div>
+                  )}
+                </div>
+                  )
+                })()
+              ))}
+            </section>
+
+            <div className="bank-stage">
+              {isComplete || builderStatus === 'incorrect' ? (
+                <div className="builder-feedback-zone" aria-live="polite">
+                  {isComplete ? (
+                    <div className="solved-banner">
+                      <span>{`${ui.solved}!`}</span>
+                    </div>
+                  ) : (
+                    <div className="retry-banner">
+                      <span>{ui.tryAgain}</span>
+                    </div>
+                  )}
                 </div>
               ) : (
-                <div className="drop-slot-placeholder" aria-hidden="true">
-                  <span className="drop-slot-index">{index + 1}</span>
-                  <span className="drop-slot-dots" />
-                </div>
+                <section
+                  className={`tile-grid tile-bank ${bankHovered ? 'hovered' : ''}`}
+                  data-bank-dropzone="true"
+                  aria-label={ui.shuffledButtons}
+                  style={{
+                    '--segment-count': round.orderedSegments.length,
+                  }}
+                  onPointerEnter={handleBankPointerEnter}
+                  onPointerLeave={handleBankPointerLeave}
+                  onPointerUp={handleBankPointerUp}
+                >
+                  {bankSegments.map((segment, index) => {
+                    const isDraggingBankSource =
+                      segment &&
+                      pointerDragTile?.id === segment.id &&
+                      draggingSlotIndex === null
+
+                    return segment && !isDraggingBankSource ? (
+                      <div key={segment.id} className="bank-cell">
+                        <div
+                          role="button"
+                          tabIndex={voiceInventoryReady && !hasLanguageVoice ? -1 : 0}
+                          aria-disabled={voiceInventoryReady && !hasLanguageVoice}
+                          className={`sound-tile ${activeTileId === segment.id ? 'playing' : ''} ${
+                            revealWhilePlaying && activeTileId === segment.id ? 'revealed' : ''
+                          } ${recentTileIds.includes(segment.id) ? 'recent' : ''}`}
+                          onClick={() => {
+                            if (suppressTileClickRef.current) {
+                              return
+                            }
+                            handleTileClick(segment)
+                          }}
+                          onKeyDown={(event) => handleTileKeyDown(event, segment)}
+                          onPointerDown={(event) => handleBankTilePointerDown(event, segment)}
+                          aria-label={`${ui.playSegment} ${segment.position + 1}`}
+                        >
+                          <span className="tile-face tile-front" aria-hidden="true">
+                            <span className="tile-speaker">🔊</span>
+                            <span className="tile-mark">{activeTileId === segment.id ? '...' : ' '}</span>
+                          </span>
+                          <span className="tile-face tile-back">{segment.text}</span>
+                        </div>
+                      </div>
+                    ) : (
+                      <div key={`bank-placeholder-${index}`} className="bank-cell" aria-hidden="true">
+                        <div className="bank-placeholder" />
+                      </div>
+                    )
+                  })}
+                </section>
               )}
             </div>
-              )
-            })()
-          ))}
-        </section>
-
-        {isComplete ? (
-          <div className="solved-banner" aria-live="polite">
-            <span>{`${ui.solved}!`}</span>
           </div>
-        ) : null}
 
-        {builderStatus === 'incorrect' ? (
-          <div className="retry-banner" aria-live="polite">
-            <span>{ui.tryAgain}</span>
+          <div className="toolbar">
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={restartCurrentRound}
+            >
+              <span className="ghost-button-icon" aria-hidden="true">↺</span>
+              <span>{ui.restart}</span>
+            </button>
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={voiceInventoryReady && !hasLanguageVoice}
+              onClick={() => speakText(getCurrentLineSpeechText())}
+            >
+              <span className="ghost-button-icon" aria-hidden="true">🔊</span>
+              <span>{ui.playFullSentence}</span>
+            </button>
+            <button
+              type="button"
+              className="ghost-button"
+              onClick={() => startNewRound(selectedLanguage, selectedLevel)}
+            >
+              <span className="ghost-button-icon" aria-hidden="true">＋</span>
+              <span>{ui.newPuzzle}</span>
+            </button>
           </div>
-        ) : null}
 
-        <section
-          className={`tile-grid tile-bank ${bankHovered ? 'hovered' : ''}`}
-          data-bank-dropzone="true"
-          aria-label={ui.shuffledButtons}
-          style={{
-            gridTemplateColumns: `repeat(${round.orderedSegments.length}, minmax(var(--tile-column-min, 110px), 1fr))`,
-          }}
-          onPointerEnter={handleBankPointerEnter}
-          onPointerLeave={handleBankPointerLeave}
-          onPointerUp={handleBankPointerUp}
-        >
-          {bankSegments.map((segment, index) => {
-            const isDraggingBankSource =
-              segment &&
-              pointerDragTile?.id === segment.id &&
-              draggingSlotIndex === null
-
-            return segment && !isDraggingBankSource ? (
-              <div
-                key={segment.id}
-                role="button"
-                tabIndex={voiceInventoryReady && !hasLanguageVoice ? -1 : 0}
-                aria-disabled={voiceInventoryReady && !hasLanguageVoice}
-                className={`sound-tile ${activeTileId === segment.id ? 'playing' : ''} ${
-                  revealWhilePlaying && activeTileId === segment.id ? 'revealed' : ''
-                } ${recentTileIds.includes(segment.id) ? 'recent' : ''}`}
-                onClick={() => {
-                  if (suppressTileClickRef.current) {
-                    return
-                  }
-                  handleTileClick(segment)
-                }}
-                onKeyDown={(event) => handleTileKeyDown(event, segment)}
-                onPointerDown={(event) => handleBankTilePointerDown(event, segment)}
-                aria-label={`${ui.playSegment} ${segment.position + 1}`}
-              >
-                <span className="tile-face tile-front" aria-hidden="true">
-                  <span className="tile-speaker">🔊</span>
-                  <span className="tile-mark">{activeTileId === segment.id ? '...' : ' '}</span>
-                </span>
-                <span className="tile-face tile-back">{segment.text}</span>
+          <div className="round-banner-bottom-zone" aria-live="polite">
+            {showRoundChange ? (
+              <div className="round-banner">
+                {ui.newPuzzleLoaded}
               </div>
-            ) : (
-              <div
-                key={`bank-placeholder-${index}`}
-                className="bank-placeholder"
-                aria-hidden="true"
-              />
-            )
-          })}
-        </section>
+            ) : null}
+          </div>
 
-        <div className="toolbar">
-          <button
-            type="button"
-            className="ghost-button"
-            onClick={restartCurrentRound}
-          >
-            <span className="ghost-button-icon" aria-hidden="true">↺</span>
-            <span>{ui.restart}</span>
-          </button>
-          <button
-            type="button"
-            className="ghost-button"
-            disabled={voiceInventoryReady && !hasLanguageVoice}
-            onClick={() => speakText(getCurrentLineSpeechText())}
-          >
-            <span className="ghost-button-icon" aria-hidden="true">🔊</span>
-            <span>{ui.playFullSentence}</span>
-          </button>
-          <button
-            type="button"
-            className="ghost-button"
-            onClick={() => startNewRound(selectedLanguage, selectedLevel)}
-          >
-            <span className="ghost-button-icon" aria-hidden="true">＋</span>
-            <span>{ui.newPuzzle}</span>
-          </button>
         </div>
 
         {pointerDragTile ? (
