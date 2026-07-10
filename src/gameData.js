@@ -1,3 +1,15 @@
+import swedishCsvRaw from './data/puzzles/swedish.csv?raw'
+import {
+  buildCsvAudioConfig,
+  getAcceptedOrderKey,
+  normalizeAudioBlobBaseUrl,
+} from './audioPaths.js'
+
+const AUDIO_BLOB_BASE_URL = normalizeAudioBlobBaseUrl(
+  import.meta.env.VITE_AUDIO_BLOB_BASE_URL,
+)
+const AUDIO_ASSET_VERSION = import.meta.env.VITE_AUDIO_ASSET_VERSION?.trim() ?? ''
+
 function pick(items) {
   return items[Math.floor(Math.random() * items.length)]
 }
@@ -15,9 +27,109 @@ function buildSentence(builders) {
   return pick(builders)()
 }
 
+function parseCsvLine(line) {
+  const values = []
+  let current = ''
+  let insideQuotes = false
+
+  for (let index = 0; index < line.length; index += 1) {
+    const character = line[index]
+
+    if (character === '"') {
+      if (insideQuotes && line[index + 1] === '"') {
+        current += '"'
+        index += 1
+      } else {
+        insideQuotes = !insideQuotes
+      }
+      continue
+    }
+
+    if (character === ',' && !insideQuotes) {
+      values.push(current)
+      current = ''
+      continue
+    }
+
+    current += character
+  }
+
+  values.push(current)
+  return values
+}
+
+function parsePuzzleCsv(rawCsv) {
+  const [headerLine, ...rowLines] = rawCsv.trim().split(/\r?\n/)
+  const headers = parseCsvLine(headerLine)
+
+  return rowLines
+    .filter((line) => line.trim().length > 0)
+    .map((line) => {
+      const values = parseCsvLine(line)
+      return Object.fromEntries(headers.map((header, index) => [header, values[index] ?? '']))
+    })
+}
+
 const RECENT_SENTENCE_MEMORY = new Map()
 const RECENT_SENTENCE_LIMIT = 6
 const ROUND_GENERATION_ATTEMPTS = 24
+
+const SWEDISH_CSV_PUZZLES = parsePuzzleCsv(swedishCsvRaw)
+  .filter((row) => row.active?.toUpperCase() === 'TRUE')
+  .map((row) => ({
+    id: row.id,
+    level: row.level,
+    segments: Array.from({ length: 8 }, (_, index) => index + 1)
+      .map((position) => {
+        const text = row[`segment_${position}`]?.trim()
+        if (!text) {
+          return null
+        }
+
+        const speechText = row[`speech_${position}`]?.trim()
+
+        return {
+          text,
+          speechText: speechText || undefined,
+        }
+      })
+      .filter(Boolean),
+    acceptedOrders: row.accepted_orders
+      ?.split('|')
+      .map((order) =>
+        order
+          .split('-')
+          .map((value) => Number.parseInt(value, 10) - 1)
+          .filter((value) => Number.isInteger(value) && value >= 0),
+      )
+      .filter((order) => order.length > 0) ?? [],
+    acceptedOrderSentences: row.accepted_order_sentences
+      ?.split('|')
+      .map((sentence) => sentence.trim()) ?? [],
+  }))
+
+const CSV_PUZZLE_CATALOG = {
+  swedish: SWEDISH_CSV_PUZZLES,
+}
+
+const DEMO_ROUNDS = {
+  english: [
+    {
+      orderedSegments: ['They', 'sit', 'near', 'their', 'house'],
+      shuffledOrder: [2, 4, 0, 3, 1],
+    },
+  ],
+  french: [
+    {
+      orderedSegments: ['Il', 'aime', 'son', 'chien'],
+      shuffledOrder: [2, 0, 3, 1],
+    },
+    {
+      orderedSegments: ['Il', 'a', 'son', 'livre'],
+      shuffledOrder: [2, 3, 0, 1],
+    },
+  ],
+}
 
 const LANGUAGE_RULES = {
   english: {
@@ -155,6 +267,85 @@ function uniqueOrders(orders) {
     seen.add(key)
     return true
   })
+}
+
+function getCsvPuzzleRows(languageId, level) {
+  return (CSV_PUZZLE_CATALOG[languageId] ?? []).filter((row) => row.level === level)
+}
+
+function createRoundFromEntries(
+  language,
+  level,
+  sentenceEntries,
+  acceptedOrders = null,
+  options = {},
+) {
+  const {
+    puzzleId = null,
+    fullAudioUrl = null,
+    fullAudioUrlsByOrder = {},
+    acceptedOrderSentences = [],
+    segmentAudioUrls = [],
+  } = options
+
+  const orderedSegments = sentenceEntries.map((entry, position) => {
+    const segment = normalizeSegment(language.id, entry)
+    return {
+      id: `${language.id}-${level}-${position}-${Math.random().toString(36).slice(2, 8)}`,
+      position,
+      text: segment.text,
+      speechText: segment.speechText,
+      audioUrl: segmentAudioUrls[position] ?? null,
+    }
+  })
+
+  const acceptedOrderIds =
+    acceptedOrders && acceptedOrders.length > 0
+      ? uniqueOrders(
+          acceptedOrders.map((order) =>
+            order
+              .map((segmentIndex) => orderedSegments[segmentIndex]?.id)
+              .filter(Boolean),
+          ),
+        ).filter((order) => order.length === orderedSegments.length)
+      : createAcceptedOrders(language.id, orderedSegments)
+
+  const fullAudioUrlsByAcceptedOrder = {}
+  const solvedSentencesByAcceptedOrder = {}
+
+  if (acceptedOrders && acceptedOrders.length > 0) {
+    acceptedOrders.forEach((order, index) => {
+      const acceptedOrderIdList = acceptedOrderIds[index]
+      if (!acceptedOrderIdList || acceptedOrderIdList.length !== orderedSegments.length) {
+        return
+      }
+
+      const orderKey = getAcceptedOrderKey(
+        order.map((segmentIndex) => segmentIndex + 1),
+      )
+
+      fullAudioUrlsByAcceptedOrder[acceptedOrderIdList.join('|')] =
+        fullAudioUrlsByOrder[orderKey] ?? (index === 0 ? fullAudioUrl : null)
+
+      const acceptedOrderSentence = acceptedOrderSentences[index]?.trim()
+      if (acceptedOrderSentence) {
+        solvedSentencesByAcceptedOrder[acceptedOrderIdList.join('|')] = acceptedOrderSentence
+      }
+    })
+  }
+
+  return {
+    acceptedOrders: acceptedOrderIds,
+    csvPuzzleId: puzzleId,
+    fullAudioUrl,
+    fullAudioUrlsByAcceptedOrder,
+    solvedSentencesByAcceptedOrder,
+    orderedSegments,
+    shuffledSegments: shuffle(orderedSegments),
+    fullSentence: orderedSegments.map((segment) => segment.text).join(language.joiner),
+    levelDescriptions: language.levelDescriptions,
+    language,
+  }
 }
 
 function createAcceptedOrders(languageId, orderedSegments) {
@@ -1309,6 +1500,7 @@ const LANGUAGE_OPTIONS = [
     ],
     joiner: ' ',
     levelDescriptions: {
+      Demo: 'Demo mode for showcasing the game',
       A1: 'Simple daily words and actions',
       A2: 'Common routines with more detail',
       B1: 'Linked ideas and fuller situations',
@@ -1338,6 +1530,7 @@ const LANGUAGE_OPTIONS = [
     ],
     joiner: ' ',
     levelDescriptions: {
+      Demo: 'Modo demo para mostrar el juego',
       A1: 'Palabras y acciones cotidianas',
       A2: 'Rutinas comunes con más detalle',
       B1: 'Ideas conectadas y situaciones amplias',
@@ -1378,6 +1571,7 @@ const LANGUAGE_OPTIONS = [
     ],
     joiner: ' ',
     levelDescriptions: {
+      Demo: 'Mode demo pour presenter le jeu',
       A1: 'Phrases très simples du quotidien',
       A2: 'Actions courantes avec plus de détails',
       B1: 'Idées liées et situations plus riches',
@@ -1406,6 +1600,7 @@ const LANGUAGE_OPTIONS = [
     ],
     joiner: ' ',
     levelDescriptions: {
+      Demo: 'Modalita demo per mostrare il gioco',
       A1: 'Parole semplici e azioni quotidiane',
       A2: 'Routine comuni con più dettagli',
       B1: 'Idee collegate e contesti più ricchi',
@@ -1436,6 +1631,7 @@ const LANGUAGE_OPTIONS = [
     ],
     joiner: ' ',
     levelDescriptions: {
+      Demo: 'Demo-Modus fur die Vorfuhrung des Spiels',
       A1: 'Einfache Alltagswörter und Handlungen',
       A2: 'Gewohnte Abläufe mit mehr Details',
       B1: 'Verbundene Ideen und breitere Situationen',
@@ -1465,6 +1661,7 @@ const LANGUAGE_OPTIONS = [
     ],
     joiner: '',
     levelDescriptions: {
+      Demo: '用于演示游戏的模式',
       A1: '简单的日常词语和动作',
       A2: '更完整的常见生活表达',
       B1: '连接起来的想法和场景',
@@ -1494,6 +1691,7 @@ const LANGUAGE_OPTIONS = [
     ],
     joiner: ' ',
     levelDescriptions: {
+      Demo: 'Demolage for att visa appen',
       A1: 'Enkla vardagsord och handlingar',
       A2: 'Vanliga rutiner med fler detaljer',
       B1: 'Sammankopplade idéer och rikare situationer',
@@ -1505,8 +1703,12 @@ const LANGUAGE_OPTIONS = [
 ]
 
 export { LANGUAGE_OPTIONS }
-export const CEFR_LEVELS = ['A1', 'A2', 'B1', 'B2']
+export const CEFR_LEVELS = ['A1', 'A2', 'B1', 'B2', 'Demo']
 export const DEFAULT_LANGUAGE = LANGUAGE_OPTIONS[0].id
+
+export function getDemoRoundCount(languageId) {
+  return DEMO_ROUNDS[languageId]?.length ?? 0
+}
 
 export function getLanguageConfig(languageId) {
   return (
@@ -1515,8 +1717,73 @@ export function getLanguageConfig(languageId) {
   )
 }
 
-export function generateRound(languageId, level) {
+export function generateRound(languageId, level, demoRoundIndex = 0) {
   const language = getLanguageConfig(languageId)
+
+  if (level === 'Demo') {
+    const demoRounds = DEMO_ROUNDS[language.id]
+
+    if (demoRounds?.length) {
+      const demoRound = demoRounds[demoRoundIndex % demoRounds.length]
+      const round = createRoundFromEntries(language, 'Demo', demoRound.orderedSegments)
+      round.shuffledSegments = demoRound.shuffledOrder.map(
+        (segmentIndex) => round.orderedSegments[segmentIndex],
+      )
+      return round
+    }
+  }
+
+  const csvPuzzleRows = getCsvPuzzleRows(language.id, level)
+  if (csvPuzzleRows.length > 0) {
+    const memoryKey = `csv:${language.id}:${level}`
+    const recentSentences = RECENT_SENTENCE_MEMORY.get(memoryKey) ?? []
+
+    let selectedPuzzleRow = csvPuzzleRows[0]
+    let sentenceSignature = selectedPuzzleRow.id
+
+    for (let attempt = 0; attempt < ROUND_GENERATION_ATTEMPTS; attempt += 1) {
+      const candidatePuzzleRow = pick(csvPuzzleRows)
+      const candidateSignature = candidatePuzzleRow.id
+
+      selectedPuzzleRow = candidatePuzzleRow
+      sentenceSignature = candidateSignature
+
+      if (!recentSentences.includes(candidateSignature)) {
+        break
+      }
+    }
+
+    const nextRecentSentences = [...recentSentences, sentenceSignature].slice(
+      -RECENT_SENTENCE_LIMIT,
+    )
+    RECENT_SENTENCE_MEMORY.set(memoryKey, nextRecentSentences)
+
+    const audioConfig = buildCsvAudioConfig(
+      AUDIO_BLOB_BASE_URL,
+      language.id,
+      level,
+      selectedPuzzleRow.id,
+      selectedPuzzleRow.segments.length,
+      selectedPuzzleRow.acceptedOrders,
+      AUDIO_ASSET_VERSION,
+    )
+
+    return createRoundFromEntries(
+      language,
+      level,
+      selectedPuzzleRow.segments,
+      selectedPuzzleRow.acceptedOrders,
+      {
+        puzzleId: selectedPuzzleRow.id,
+        acceptedOrderSentences: selectedPuzzleRow.acceptedOrderSentences,
+        fullAudioUrl: audioConfig.fullAudioUrl,
+        fullAudioUrlsByOrder: audioConfig.fullAudioUrlsByOrder,
+        segmentAudioUrls: audioConfig.segmentAudioUrls,
+      },
+    )
+  }
+
+  const resolvedLevel = level === 'Demo' ? 'A1' : level
   const memoryKey = `${language.id}:${level}`
   const recentSentences = RECENT_SENTENCE_MEMORY.get(memoryKey) ?? []
 
@@ -1524,7 +1791,7 @@ export function generateRound(languageId, level) {
   let sentenceSignature = ''
 
   for (let attempt = 0; attempt < ROUND_GENERATION_ATTEMPTS; attempt += 1) {
-    const candidateEntries = buildSentence(language.builders[level])
+    const candidateEntries = buildSentence(language.builders[resolvedLevel])
       .filter(Boolean)
       .slice(0, 8)
 

@@ -5,6 +5,7 @@ import {
   DEFAULT_LANGUAGE,
   LANGUAGE_OPTIONS,
   generateRound,
+  getDemoRoundCount,
   getLanguageConfig,
 } from './gameData.js'
 
@@ -22,6 +23,34 @@ const REVEAL_MODES = [
 ]
 
 const STORAGE_KEY = 'playasentence-settings'
+const AUDIO_CACHE_BYPASS_ENABLED =
+  import.meta.env.DEV && import.meta.env.VITE_AUDIO_CACHE_BYPASS !== 'false'
+
+function getAudioPlaybackUrl(audioUrl) {
+  if (!AUDIO_CACHE_BYPASS_ENABLED || !audioUrl) {
+    return audioUrl
+  }
+
+  const separator = audioUrl.includes('?') ? '&' : '?'
+  const cacheBustValue = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+  return `${audioUrl}${separator}devAudio=${cacheBustValue}`
+}
+
+function getDemoDefaultVoiceGender(languageId, level) {
+  if (level !== 'Demo') {
+    return null
+  }
+
+  if (languageId === 'french') {
+    return 'male'
+  }
+
+  if (languageId === 'english') {
+    return 'female'
+  }
+
+  return null
+}
 
 function loadSavedSettings() {
   if (typeof window === 'undefined') {
@@ -203,7 +232,16 @@ function getSpeechSettings() {
   }
 }
 
-function formatSolvedDisplayTexts(languageId, segments) {
+function formatSolvedDisplayTexts(languageId, segments, sentenceText = '') {
+  const sentenceEnding = sentenceText.trim().match(/[.!?]+$/)?.[0]
+  const endingPunctuation =
+    sentenceEnding ??
+    segments
+      .slice()
+      .reverse()
+      .map((segment) => segment?.text?.trim().match(/[.!?]+$/)?.[0])
+      .find(Boolean) ??
+    '.'
   const nextTexts = segments.map((segment) => {
     if (!segment) {
       return ''
@@ -213,7 +251,7 @@ function formatSolvedDisplayTexts(languageId, segments) {
       return 'I'
     }
 
-    return segment.text
+    return segment.text.replace(/[.!?]+$/g, '')
   })
 
   const firstIndex = nextTexts.findIndex(Boolean)
@@ -227,9 +265,7 @@ function formatSolvedDisplayTexts(languageId, segments) {
       continue
     }
 
-    if (!/[.!?]$/.test(nextTexts[index])) {
-      nextTexts[index] = `${nextTexts[index]}.`
-    }
+    nextTexts[index] = `${nextTexts[index].replace(/[,.!?]+$/g, '')}${endingPunctuation}`
     break
   }
 
@@ -238,6 +274,10 @@ function formatSolvedDisplayTexts(languageId, segments) {
 
 function createEmptySlots(length) {
   return Array.from({ length }, () => null)
+}
+
+function getSegmentSpeechForSentence(segment) {
+  return segment.text.replace(/[.!?]+$/g, '')
 }
 
 function shuffleItems(items) {
@@ -259,9 +299,11 @@ function App() {
   const initialLevel = CEFR_LEVELS.includes(savedSettings?.selectedLevel)
     ? savedSettings.selectedLevel
     : 'A1'
-  const initialVoiceGender =
+  const savedVoiceGender =
     VOICE_GENDERS.find((voiceGender) => voiceGender.id === savedSettings?.selectedVoiceGender)
       ?.id ?? 'female'
+  const initialVoiceGender =
+    getDemoDefaultVoiceGender(initialLanguage, initialLevel) ?? savedVoiceGender
   const initialRevealWhilePlaying = Boolean(savedSettings?.revealWhilePlaying)
   const initialCefrExpanded =
     typeof savedSettings?.cefrExpanded === 'boolean'
@@ -274,7 +316,8 @@ function App() {
   const [revealWhilePlaying, setRevealWhilePlaying] = useState(initialRevealWhilePlaying)
   const [cefrExpanded, setCefrExpanded] = useState(initialCefrExpanded)
   const [sidebarMenuOpen, setSidebarMenuOpen] = useState(false)
-  const [round, setRound] = useState(() => generateRound(initialLanguage, initialLevel))
+  const [demoRoundIndex, setDemoRoundIndex] = useState(0)
+  const [round, setRound] = useState(() => generateRound(initialLanguage, initialLevel, 0))
   const [placedSegments, setPlacedSegments] = useState(() =>
     createEmptySlots(round.orderedSegments.length),
   )
@@ -298,6 +341,8 @@ function App() {
   const recentTileTimeoutsRef = useRef({})
   const setPlacedSegmentsWithSolveRef = useRef(null)
   const [voiceInventoryReady, setVoiceInventoryReady] = useState(false)
+  const audioPlaybackRef = useRef(null)
+  const audioCacheRef = useRef(new Map())
   const solvedSentenceRef = useRef('')
   const pointerDragIndexRef = useRef(null)
   const pointerDragOriginRef = useRef(null)
@@ -315,6 +360,9 @@ function App() {
 
   const currentLanguage = getLanguageConfig(selectedLanguage)
   const ui = currentLanguage.ui
+  const demoRoundCount = getDemoRoundCount(selectedLanguage)
+  const isDemoMode = selectedLevel === 'Demo' && demoRoundCount > 0
+  const usesRecordedAudio = Boolean(round.csvPuzzleId && round.fullAudioUrl)
   const isComplete = solvedSentence.length > 0
   const isBuilderFilled = placedSegments.every(Boolean)
   const builderStatus = isComplete
@@ -325,7 +373,7 @@ function App() {
   const [availableVoiceGenders, setAvailableVoiceGenders] = useState(() =>
     VOICE_GENDERS.map((voiceGender) => voiceGender.id),
   )
-  const hasLanguageVoice = availableVoiceGenders.length > 0
+  const hasLanguageVoice = voiceInventoryReady && availableVoiceGenders.length > 0
   const placedIds = placedSegments
     .filter(Boolean)
     .map((segment) => segment.id)
@@ -336,7 +384,7 @@ function App() {
     placedIds.includes(segment.id) ? null : segment,
   )
   const solvedDisplayTexts = isComplete
-    ? formatSolvedDisplayTexts(selectedLanguage, placedSegments)
+    ? formatSolvedDisplayTexts(selectedLanguage, placedSegments, solvedSentence)
     : []
 
   useEffect(() => {
@@ -475,7 +523,12 @@ function App() {
     updateVoice()
     window.speechSynthesis.onvoiceschanged = updateVoice
 
-      return () => {
+    return () => {
+      if (audioPlaybackRef.current) {
+        audioPlaybackRef.current.pause()
+        audioPlaybackRef.current.src = ''
+        audioPlaybackRef.current = null
+      }
       window.speechSynthesis?.cancel()
       window.speechSynthesis.onvoiceschanged = null
       window.clearTimeout(roundChangeTimeoutRef.current)
@@ -560,6 +613,36 @@ function App() {
       body.style.overflow = previousBodyOverflow
     }
   }, [sidebarMenuOpen])
+
+  useEffect(() => {
+    if (typeof window === 'undefined') {
+      return undefined
+    }
+
+    if (AUDIO_CACHE_BYPASS_ENABLED) {
+      audioCacheRef.current.clear()
+      return undefined
+    }
+
+    const urlsToPrime = [
+      ...round.orderedSegments.map((segment) => segment.audioUrl),
+      round.fullAudioUrl,
+      ...Object.values(round.fullAudioUrlsByAcceptedOrder ?? {}),
+    ].filter(Boolean)
+
+    urlsToPrime.forEach((audioUrl) => {
+      if (audioCacheRef.current.has(audioUrl)) {
+        return
+      }
+
+      const audio = new Audio(audioUrl)
+      audio.preload = 'auto'
+      audio.load()
+      audioCacheRef.current.set(audioUrl, audio)
+    })
+
+    return undefined
+  }, [round])
 
   useEffect(() => {
     function getDropTarget(clientX, clientY) {
@@ -723,10 +806,11 @@ function App() {
   }, [placedSegments, pointerDragTile, round, selectedSlotIndex])
 
   function speakText(text, tileId = null) {
-    if (!text || !speechSupported || (voiceInventoryReady && !hasLanguageVoice)) {
+    if (!text || !speechSupported || !voiceInventoryReady || !hasLanguageVoice) {
       return
     }
 
+    stopCurrentAudioPlayback()
     window.speechSynthesis.cancel()
     const utterance = new SpeechSynthesisUtterance(text)
     utterance.lang = currentLanguage.speechLang
@@ -763,7 +847,98 @@ function App() {
     window.speechSynthesis.speak(utterance)
   }
 
+  function stopCurrentAudioPlayback() {
+    const currentAudio = audioPlaybackRef.current
+    if (!currentAudio) {
+      window.clearTimeout(activeTileTimeoutRef.current)
+      setActiveTileId(null)
+      return
+    }
+
+    currentAudio.onplay = null
+    currentAudio.onended = null
+    currentAudio.onerror = null
+
+    try {
+      currentAudio.pause()
+      currentAudio.currentTime = 0
+    } catch {
+      // Ignore fast interruption errors from partially loaded media.
+    }
+
+    audioPlaybackRef.current = null
+    window.clearTimeout(activeTileTimeoutRef.current)
+    setActiveTileId(null)
+  }
+
+  function playAudioUrl(audioUrl, fallbackText, tileId = null) {
+    if (!audioUrl) {
+      speakText(fallbackText, tileId)
+      return
+    }
+
+    const playbackAudioUrl = getAudioPlaybackUrl(audioUrl)
+    let audio = AUDIO_CACHE_BYPASS_ENABLED ? null : audioCacheRef.current.get(audioUrl)
+    if (!audio) {
+      audio = new Audio(playbackAudioUrl)
+      audio.preload = 'auto'
+      audio.load()
+      if (!AUDIO_CACHE_BYPASS_ENABLED) {
+        audioCacheRef.current.set(audioUrl, audio)
+      }
+    }
+
+    stopCurrentAudioPlayback()
+    window.speechSynthesis.cancel()
+    audioPlaybackRef.current = audio
+
+    const clearPlayback = () => {
+      if (audioPlaybackRef.current === audio) {
+        audioPlaybackRef.current = null
+      }
+    }
+
+    audio.onplay = () => {
+      window.clearTimeout(activeTileTimeoutRef.current)
+      setActiveTileId(tileId)
+    }
+
+    audio.onended = () => {
+      clearPlayback()
+      window.clearTimeout(activeTileTimeoutRef.current)
+      activeTileTimeoutRef.current = window.setTimeout(() => {
+        setActiveTileId(null)
+      }, 450)
+    }
+
+    audio.onerror = () => {
+      clearPlayback()
+      window.clearTimeout(activeTileTimeoutRef.current)
+      setActiveTileId(null)
+      speakText(fallbackText, tileId)
+    }
+
+    try {
+      audio.currentTime = 0
+    } catch {
+      // Ignore rewind errors while the browser is still preparing the file.
+    }
+
+    audio.play().catch(() => {
+      clearPlayback()
+      window.clearTimeout(activeTileTimeoutRef.current)
+      setActiveTileId(null)
+      speakText(fallbackText, tileId)
+    })
+  }
+
   function getSolvedSentenceFromIds(segmentIds) {
+    const acceptedOrderSentence =
+      round.solvedSentencesByAcceptedOrder?.[segmentIds.join('|')]
+    if (acceptedOrderSentence) {
+      return acceptedOrderSentence
+    }
+
     return segmentIds
       .map((segmentId) =>
         round.orderedSegments.find((roundSegment) => roundSegment.id === segmentId)?.text,
@@ -782,8 +957,39 @@ function App() {
     }
 
     return lineSegments
-      .map((segment) => segment.speechText ?? segment.text)
+      .map((segment) => getSegmentSpeechForSentence(segment))
       .join(round.language.joiner)
+  }
+
+  function getFullAudioUrlForSegmentIds(segmentIds) {
+    if (segmentIds.length !== round.orderedSegments.length) {
+      return null
+    }
+
+    const acceptedOrder = round.acceptedOrders.find((candidateOrder) =>
+      candidateOrder.every((segmentId, index) => segmentIds[index] === segmentId),
+    )
+
+    if (!acceptedOrder) {
+      return null
+    }
+
+    return (
+      round.fullAudioUrlsByAcceptedOrder?.[acceptedOrder.join('|')] ??
+      (acceptedOrder.every(
+        (segmentId, index) => segmentId === round.orderedSegments[index]?.id,
+      )
+        ? round.fullAudioUrl
+        : null)
+    )
+  }
+
+  function getCurrentLineFullAudioUrl() {
+    const lineSegmentIds = placedSegments
+      .filter(Boolean)
+      .map((segment) => segment.id)
+
+    return getFullAudioUrlForSegmentIds(lineSegmentIds)
   }
 
   function updateSolvedState(nextPlacedSegments) {
@@ -816,7 +1022,12 @@ function App() {
     solveFrameRef.current = window.requestAnimationFrame(() => {
       solvedSentenceRef.current = nextSolvedSentence
       setSolvedSentence(nextSolvedSentence)
-      speakText(nextSolvedSentence)
+      const solvedAudioUrl = getFullAudioUrlForSegmentIds(solvedOrder)
+      if (solvedAudioUrl) {
+        playAudioUrl(solvedAudioUrl, nextSolvedSentence)
+      } else {
+        speakText(nextSolvedSentence)
+      }
     })
   }
 
@@ -857,7 +1068,12 @@ function App() {
       solveFrameRef.current = window.requestAnimationFrame(() => {
         solvedSentenceRef.current = nextSolvedSentence
         setSolvedSentence(nextSolvedSentence)
-        speakText(nextSolvedSentence)
+        const solvedAudioUrl = getFullAudioUrlForSegmentIds(solvedOrder)
+        if (solvedAudioUrl) {
+          playAudioUrl(solvedAudioUrl, nextSolvedSentence)
+        } else {
+          speakText(nextSolvedSentence)
+        }
       })
     }
   }, [
@@ -870,9 +1086,18 @@ function App() {
     voiceInventoryReady,
   ])
 
-  function startNewRound(languageId, level) {
-    const nextRound = generateRound(languageId, level)
+  function startNewRound(languageId, level, options = {}) {
+    const isDemo = level === 'Demo'
+    const demoCount = getDemoRoundCount(languageId)
+    const nextDemoRoundIndex = isDemo
+      ? options.demoRoundIndex ?? (options.advanceDemo && demoCount > 0
+          ? (demoRoundIndex + 1) % demoCount
+          : 0)
+      : 0
+
+    const nextRound = generateRound(languageId, level, nextDemoRoundIndex)
     setRound(nextRound)
+    setDemoRoundIndex(nextDemoRoundIndex)
     setPlacedSegments(createEmptySlots(nextRound.orderedSegments.length))
     setRecentTileIds([])
     setSolvedSentence('')
@@ -941,15 +1166,23 @@ function App() {
     }
 
     setSelectedLevel(level)
+    const demoDefaultVoiceGender = getDemoDefaultVoiceGender(selectedLanguage, level)
+    if (demoDefaultVoiceGender) {
+      setSelectedVoiceGender(demoDefaultVoiceGender)
+    }
     setCefrExpanded(false)
     setSidebarMenuOpen(false)
-    startNewRound(selectedLanguage, level)
+    startNewRound(selectedLanguage, level, { demoRoundIndex: 0 })
   }
 
   function handleLanguageChange(languageId) {
     setSelectedLanguage(languageId)
+    const demoDefaultVoiceGender = getDemoDefaultVoiceGender(languageId, selectedLevel)
+    if (demoDefaultVoiceGender) {
+      setSelectedVoiceGender(demoDefaultVoiceGender)
+    }
     setSidebarMenuOpen(false)
-    startNewRound(languageId, selectedLevel)
+    startNewRound(languageId, selectedLevel, { demoRoundIndex: 0 })
   }
 
   function handleVoiceGenderChange(voiceGender) {
@@ -967,6 +1200,25 @@ function App() {
   function handleRevealModeChange(mode) {
     setRevealWhilePlaying(mode === 'on')
     setSidebarMenuOpen(false)
+  }
+
+  function handleDemoNavigation(direction) {
+    if (!isDemoMode) {
+      return
+    }
+
+    const nextIndex =
+      direction === 'previous'
+        ? Math.max(0, demoRoundIndex - 1)
+        : Math.min(demoRoundCount - 1, demoRoundIndex + 1)
+
+    if (nextIndex === demoRoundIndex) {
+      return
+    }
+
+    startNewRound(selectedLanguage, selectedLevel, {
+      demoRoundIndex: nextIndex,
+    })
   }
 
   function handleSidebarSurfaceClick(event) {
@@ -1003,7 +1255,7 @@ function App() {
       delete recentTileTimeoutsRef.current[segment.id]
     }, 1800)
 
-    speakText(segment.speechText ?? segment.text, segment.id)
+    playAudioUrl(segment.audioUrl, segment.speechText ?? segment.text, segment.id)
   }
 
   useEffect(() => {
@@ -1367,39 +1619,41 @@ function App() {
             )}
           </section>
 
-          <section className="panel voice-panel" aria-labelledby="voice-heading">
-            <div className="panel-heading">
-              <h2 id="voice-heading">{ui.voice}</h2>
-            </div>
-            <div className="voice-list" role="list" aria-label={ui.voiceGender}>
-              {VOICE_GENDERS.map((voiceGender) => (
-                <button
-                  key={voiceGender.id}
-                  type="button"
-                  disabled={
-                    voiceInventoryReady &&
-                    !availableVoiceGenders.includes(voiceGender.id)
-                  }
-                  aria-disabled={
-                    voiceInventoryReady &&
-                    !availableVoiceGenders.includes(voiceGender.id)
-                  }
-                  className={`level-button ${voiceGender.id === selectedVoiceGender ? 'selected' : ''} ${
-                    voiceInventoryReady &&
-                    !availableVoiceGenders.includes(voiceGender.id)
-                      ? 'disabled'
-                      : ''
-                  }`}
-                  onClick={() => handleVoiceGenderChange(voiceGender.id)}
-                >
-                  <strong>{voiceGender.id === 'female' ? ui.female : ui.male}</strong>
-                </button>
-              ))}
-            </div>
-            {voiceInventoryReady && !hasLanguageVoice ? (
-              <p className="panel-note">{ui.voiceUnavailable}</p>
-            ) : null}
-          </section>
+          {!usesRecordedAudio ? (
+            <section className="panel voice-panel" aria-labelledby="voice-heading">
+              <div className="panel-heading">
+                <h2 id="voice-heading">{ui.voice}</h2>
+              </div>
+              <div className="voice-list" role="list" aria-label={ui.voiceGender}>
+                {VOICE_GENDERS.map((voiceGender) => (
+                  <button
+                    key={voiceGender.id}
+                    type="button"
+                    disabled={
+                      voiceInventoryReady &&
+                      !availableVoiceGenders.includes(voiceGender.id)
+                    }
+                    aria-disabled={
+                      voiceInventoryReady &&
+                      !availableVoiceGenders.includes(voiceGender.id)
+                    }
+                    className={`level-button ${voiceGender.id === selectedVoiceGender ? 'selected' : ''} ${
+                      voiceInventoryReady &&
+                      !availableVoiceGenders.includes(voiceGender.id)
+                        ? 'disabled'
+                        : ''
+                    }`}
+                    onClick={() => handleVoiceGenderChange(voiceGender.id)}
+                  >
+                    <strong>{voiceGender.id === 'female' ? ui.female : ui.male}</strong>
+                  </button>
+                ))}
+              </div>
+              {voiceInventoryReady && !hasLanguageVoice ? (
+                <p className="panel-note">{ui.voiceUnavailable}</p>
+              ) : null}
+            </section>
+          ) : null}
 
             <section className="panel voice-panel" aria-labelledby="reveal-heading">
               <div className="panel-heading">
@@ -1425,7 +1679,7 @@ function App() {
       </aside>
 
       <section
-        className={`board ${showRoundChange ? 'board-switched' : ''}`}
+        className="board"
         style={
           collapsedSidebarHeight
             ? { minHeight: `${collapsedSidebarHeight}px`, maxHeight: `${collapsedSidebarHeight}px` }
@@ -1561,7 +1815,9 @@ function App() {
                 </div>
               ) : (
                 <section
-                  className={`tile-grid tile-bank ${bankHovered ? 'hovered' : ''}`}
+                  className={`tile-grid tile-bank ${bankHovered ? 'hovered' : ''} ${
+                    showRoundChange ? 'refreshing' : ''
+                  }`}
                   data-bank-dropzone="true"
                   aria-label={ui.shuffledButtons}
                   style={{
@@ -1578,14 +1834,20 @@ function App() {
                       draggingSlotIndex === null
 
                     return segment && !isDraggingBankSource ? (
-                      <div key={segment.id} className="bank-cell">
+                      <div
+                        key={segment.id}
+                        className="bank-cell"
+                        style={{ '--tile-enter-delay': `${index * 60}ms` }}
+                      >
                         <div
                           role="button"
                           tabIndex={voiceInventoryReady && !hasLanguageVoice ? -1 : 0}
                           aria-disabled={voiceInventoryReady && !hasLanguageVoice}
                           className={`sound-tile ${activeTileId === segment.id ? 'playing' : ''} ${
                             revealWhilePlaying && activeTileId === segment.id ? 'revealed' : ''
-                          } ${recentTileIds.includes(segment.id) ? 'recent' : ''}`}
+                          } ${recentTileIds.includes(segment.id) ? 'recent' : ''} ${
+                            showRoundChange ? 'tile-entering' : ''
+                          }`}
                           onClick={() => {
                             if (suppressTileClickRef.current) {
                               return
@@ -1627,7 +1889,20 @@ function App() {
               type="button"
               className="ghost-button"
               disabled={voiceInventoryReady && !hasLanguageVoice}
-              onClick={() => speakText(getCurrentLineSpeechText())}
+              onClick={() => {
+                const currentLineSpeechText = getCurrentLineSpeechText()
+                if (!currentLineSpeechText) {
+                  return
+                }
+
+                const currentLineFullAudioUrl = getCurrentLineFullAudioUrl()
+                if (currentLineFullAudioUrl) {
+                  playAudioUrl(currentLineFullAudioUrl, currentLineSpeechText)
+                  return
+                }
+
+                speakText(currentLineSpeechText)
+              }}
             >
               <span className="ghost-button-icon" aria-hidden="true">🔊</span>
               <span>{ui.playFullSentence}</span>
@@ -1635,7 +1910,11 @@ function App() {
             <button
               type="button"
               className="ghost-button"
-              onClick={() => startNewRound(selectedLanguage, selectedLevel)}
+              onClick={() =>
+                startNewRound(selectedLanguage, selectedLevel, {
+                  advanceDemo: selectedLevel === 'Demo',
+                })
+              }
             >
               <span className="ghost-button-icon" aria-hidden="true">＋</span>
               <span>{ui.newPuzzle}</span>
@@ -1646,6 +1925,33 @@ function App() {
             {showRoundChange ? (
               <div className="round-banner">
                 {ui.newPuzzleLoaded}
+              </div>
+            ) : null}
+            {isDemoMode ? (
+              <div className="demo-nav" aria-label="Demo navigation">
+                <button
+                  type="button"
+                  className="demo-nav-button"
+                  onClick={() => handleDemoNavigation('previous')}
+                  disabled={demoRoundIndex === 0}
+                  aria-label="Previous demo sentence"
+                >
+                  ←
+                </button>
+                <div className="demo-nav-index" aria-live="polite">
+                  <span>{demoRoundIndex + 1}</span>
+                  <span>/</span>
+                  <span>{demoRoundCount}</span>
+                </div>
+                <button
+                  type="button"
+                  className="demo-nav-button"
+                  onClick={() => handleDemoNavigation('next')}
+                  disabled={demoRoundIndex >= demoRoundCount - 1}
+                  aria-label="Next demo sentence"
+                >
+                  →
+                </button>
               </div>
             ) : null}
           </div>
