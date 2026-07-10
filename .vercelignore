@@ -1,0 +1,6 @@
+.env*
+.vercel
+.DS_Store
+dist
+generated
+node_modules
